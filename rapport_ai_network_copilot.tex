@@ -1,0 +1,1023 @@
+% !TeX program = pdflatex
+% =====================================================================
+%  Rapport de Stage - AI Network Copilot
+%  Compatible Overleaf (pdfLaTeX)
+% =====================================================================
+\documentclass[12pt,a4paper]{report}
+
+% ---------- Encodage & langue ----------
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[french]{babel}
+\usepackage{lmodern}
+
+% ---------- Mise en page ----------
+\usepackage[left=2.5cm,right=2.5cm,top=2.5cm,bottom=2.5cm]{geometry}
+\usepackage{setspace}
+\onehalfspacing
+\usepackage{parskip}
+
+% ---------- Mathématiques & symboles ----------
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{textcomp}
+\usepackage{pifont}
+
+% ---------- Graphiques & tableaux ----------
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{colortbl}
+
+% ---------- Listes ----------
+\usepackage{enumitem}
+
+% ---------- En-têtes / pieds de page ----------
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+
+% ---------- Liens ----------
+\usepackage{hyperref}
+\usepackage{csquotes}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    citecolor=black,
+    filecolor=magenta,
+    urlcolor=blue,
+    pdftitle={Rapport de Stage - AI Network Copilot},
+    pdfauthor={AI Network Copilot}
+}
+\urlstyle{same}
+
+% ---------- Couleurs du document ----------
+\definecolor{bleutt}{RGB}{0,84,159}
+\definecolor{grisclair}{RGB}{240,240,240}
+\definecolor{grismoyen}{RGB}{120,120,120}
+
+% ---------- Style des titres de chapitre ----------
+\titleformat{\chapter}[display]
+  {\normalfont\huge\bfseries\color{bleutt}}
+  {\chaptertitlename\ \thechapter}{20pt}{\Huge}
+\titlespacing*{\chapter}{0pt}{10pt}{30pt}
+
+% ---------- En-têtes ----------
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{\small\textit{AI Network Copilot}}
+\lhead{\small\textit{Rapport de Stage}}
+\rfoot{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0.4pt}
+
+\fancypagestyle{plain}{%
+  \fancyhf{}
+  \rfoot{\thepage}
+  \renewcommand{\headrulewidth}{0pt}
+}
+
+% ---------- Raccourcis ----------
+\newcommand{\checkitem}{\ding{51}}      % coche
+\newcommand{\diamonditem}{\ding{117}}   % losange
+\newcommand{\redcircle}{\textcolor{red}{\ding{108}}}
+
+% Boîte de remplacement pour une figure (compile sans fichier image)
+\newcommand{\figplaceholder}[2][8cm]{%
+  \begin{center}
+  \setlength{\fboxsep}{6pt}%
+  \fbox{\begin{minipage}[c][#1][c]{0.86\textwidth}
+  \centering\itshape\color{grismoyen} #2
+  \end{minipage}}
+  \end{center}}
+
+% =====================================================================
+\begin{document}
+
+% =====================================================================
+%  PAGE DE GARDE
+% =====================================================================
+\begin{titlepage}
+\thispagestyle{empty}
+\begin{flushright}
+\small Réf : \dotfill
+\end{flushright}
+\begin{flushright}
+\small AU : 2025--2026
+\end{flushright}
+
+\vspace{0.4cm}
+\begin{center}
+{\large\textbf{Université de Sousse}}\\[0.2cm]
+{\large\textbf{École Nationale d'Ingénieurs de Sousse}}\\[0.6cm]
+
+\rule{\textwidth}{1pt}
+\vspace{0.8cm}
+
+{\Huge\bfseries\color{bleutt} Rapport de Stage d'été}\\[0.6cm]
+{\large $[\ ]$ Initiation \qquad $[\times]$ Ingénieur}\\[1.2cm]
+
+\rule{0.6\textwidth}{0.6pt}
+\vspace{1cm}
+
+{\large\bfseries Sujet :}\\[0.3cm]
+{\LARGE\bfseries\color{bleutt} AI Network Copilot}\\[0.4cm]
+{\large\itshape Système intelligent de supervision réseau et de détection\\ d'anomalies par intelligence artificielle}\\[1.4cm]
+
+\rule{0.6\textwidth}{0.6pt}
+\vspace{0.8cm}
+
+\begin{minipage}{0.9\textwidth}
+\centering
+\large
+\textbf{Réalisé par :}\\
+[Nom et Prénom de l'étudiant(e)]\\[0.5cm]
+
+\textbf{Filière :}\\
+Génie Télécommunications et Réseaux\\[0.5cm]
+
+\textbf{Stage effectué au sein de la Société (ou de l'Entreprise) :}\\
+{[Nom de l'entreprise]}\\
+Adresse : [Adresse de l'entreprise]\\[0.5cm]
+
+\textbf{Encadrant :} [Nom de l'encadrant]\\[0.5cm]
+
+\textbf{Période du stage :} [01/07/2026] -- [01/08/2026]
+\end{minipage}
+
+\end{center}
+\end{titlepage}
+
+% =====================================================================
+%  REMERCIEMENTS
+% =====================================================================
+\chapter*{Remerciements}
+\addcontentsline{toc}{chapter}{Remerciements}
+\markboth{Remerciements}{Remerciements}
+
+Je tiens à exprimer mes sincères remerciements à toute l'équipe de
+[Nom de l'entreprise] pour son accueil chaleureux, son encadrement et son
+soutien tout au long de mon stage d'ingénieur au sein de cette structure.
+Leur professionnalisme et leur bienveillance ont grandement contribué à faire
+de cette expérience une période enrichissante et formatrice.
+
+Je suis particulièrement reconnaissant(e) envers mon encadrant,
+[Nom de l'encadrant], pour sa disponibilité constante, ses précieux conseils et
+sa patience. Grâce à ses orientations avisées, j'ai pu mener à bien mes missions
+et approfondir mes connaissances dans le domaine de la supervision des réseaux,
+de l'automatisation et de l'intelligence artificielle appliquée à la détection
+d'anomalies.
+
+Je tiens également à remercier l'ensemble des collaborateurs pour leur aide,
+leurs conseils et leur esprit d'équipe, qui ont favorisé mon apprentissage et
+mon épanouissement professionnel. Leur collaboration et leur expertise ont créé
+un environnement de travail stimulant et convivial.
+
+Enfin, j'exprime ma gratitude envers le corps enseignant de l'École Nationale
+d'Ingénieurs de Sousse pour la qualité de la formation dispensée, ainsi qu'envers
+toutes les personnes qui, de près ou de loin, ont contribué à la réussite de ce
+projet. Cette expérience m'a permis d'appliquer les connaissances acquises au
+cours de mes études, de découvrir le fonctionnement d'un projet technique complet
+et d'améliorer mes compétences techniques et relationnelles.
+
+% =====================================================================
+%  SOMMAIRE / TABLE DES MATIÈRES
+% =====================================================================
+\renewcommand{\contentsname}{Sommaire}
+\tableofcontents
+\thispagestyle{fancy}
+
+% =====================================================================
+%  LISTE DES FIGURES
+% =====================================================================
+\renewcommand{\listfigurename}{Liste des figures}
+\listoffigures
+\addcontentsline{toc}{chapter}{Liste des figures}
+
+% =====================================================================
+%  FICHE-SYNTHÈSE DU STAGE
+% =====================================================================
+\chapter*{Fiche-synthèse du stage}
+\addcontentsline{toc}{chapter}{Fiche-synthèse du stage}
+\markboth{Fiche-synthèse du stage}{Fiche-synthèse du stage}
+
+\renewcommand{\arraystretch}{1.4}
+\begin{longtable}{|>{\raggedright\arraybackslash}p{6.2cm}|>{\raggedright\arraybackslash}p{8.5cm}|}
+\hline
+\rowcolor{grisclair}
+\textbf{Rubrique} & \textbf{Renseignement} \\
+\hline
+Nom de l'entreprise & [Nom de l'entreprise] \\
+\hline
+Ville & [Ville] \\
+\hline
+Nom de l'encadrant industriel & [Nom de l'encadrant] \\
+\hline
+Date début et date fin du stage & 01/07/2026 -- 01/08/2026 \\
+\hline
+Nombre de jours effectifs passés dans les locaux de l'entreprise & 20 jours \\
+\hline
+Les principales tâches réalisées durant le stage (maximum 3) &
+\begin{minipage}[t]{\linewidth}
+\begin{itemize}[leftmargin=*,nosep]
+\item Concevoir et automatiser une collecte temps réel des métriques réseau (latence, taux d'erreurs, trafic) et découvrir les équipements du réseau.
+\item Développer un moteur de détection d'anomalies hybride (règles métier + Machine Learning) avec identification de la cause probable.
+\item Réaliser une API (FastAPI) et un tableau de bord temps réel (Streamlit) pour la visualisation et l'alerte.
+\end{itemize}
+\end{minipage} \\
+\hline
+Le stage contient-il une période d'observation ? & Non \\
+\hline
+Le stage contient-il une partie conception ? Si oui, combien de jours ? & Oui -- 5 jours \\
+\hline
+Le stage contient-il une partie développement ? Si oui, combien de jours ? & Oui -- 12 jours \\
+\hline
+Prérequis en termes de compétences techniques &
+Connaissances en réseaux informatiques, programmation Python, notions de Machine Learning \\
+\hline
+Les outils et logiciels utilisés durant le stage &
+Python, FastAPI, Streamlit, SQLite, scikit-learn, pandas, Plotly, Docker, Git, VS Code \\
+\hline
+Le matériel (autre que les PCs) utilisé & Non \\
+\hline
+Méthodologies utilisées durant le stage & Approche incrémentale et itérative, travail collaboratif (contrat d'API), tests et validation \\
+\hline
+Deux principales compétences comportementales acquises & La rigueur / La résolution de problèmes \\
+\hline
+Deux principales compétences techniques acquises &
+Développement d'API et de tableaux de bord temps réel, détection d'anomalies par intelligence artificielle \\
+\hline
+\end{longtable}
+\renewcommand{\arraystretch}{1.0}
+
+% =====================================================================
+%  INTRODUCTION GÉNÉRALE
+% =====================================================================
+\chapter*{Introduction générale}
+\addcontentsline{toc}{chapter}{Introduction générale}
+\markboth{Introduction générale}{Introduction générale}
+
+Au cours des dernières années, la complexité et la criticité des infrastructures
+réseau ont considérablement augmenté, rendant leur gestion et leur supervision de
+plus en plus exigeantes. Les interruptions de service, les dégradations de
+performance et les incidents réseau représentent aujourd'hui des menaces majeures
+pouvant engendrer des pertes économiques considérables et compromettre la
+continuité des activités. Selon plusieurs études, une indisponibilité réseau de
+seulement quelques minutes peut coûter plusieurs milliers d'euros à une entreprise
+et affecter directement la productivité des utilisateurs.
+
+Face à cette réalité, il est devenu impératif de mettre en place des solutions de
+surveillance intelligente et proactive, capables non seulement de détecter les
+incidents mais aussi d'en identifier la cause probable et de guider l'administrateur
+vers la résolution, idéalement avant que l'incident n'affecte les utilisateurs.
+
+Mon projet de stage s'inscrit dans cette problématique. En tant qu'étudiant(e) en
+génie des télécommunications et réseaux, j'ai eu l'opportunité de concevoir et de
+développer \textbf{AI Network Copilot}, un système intelligent de monitoring et de
+maintenance prédictive. Ce système surveille en continu une infrastructure réseau,
+découvre automatiquement les équipements connectés, collecte leurs métriques
+(latence, taux d'erreurs, trafic), puis détecte les anomalies et en identifie la
+cause au moyen d'un moteur hybride combinant des règles métier et un modèle de
+Machine Learning.
+
+La méthodologie employée repose sur l'intégration d'outils modernes de collecte et
+de visualisation, couplés à des algorithmes d'apprentissage automatique
+(\textit{Isolation Forest} pour la détection d'anomalies non supervisée) afin de
+transformer des données brutes en décisions exploitables. L'ensemble de la
+plateforme a été développé en Python, autour d'une API REST (FastAPI), d'une base
+de données SQLite et d'un tableau de bord temps réel (Streamlit) enrichi de
+graphiques interactifs (Plotly) et de communications temps réel (WebSocket).
+
+Dans ce rapport, je commencerai par présenter l'organisme d'accueil et le contexte
+de mon stage. J'exposerai ensuite la problématique de la supervision proactive et
+l'intérêt d'utiliser l'intelligence artificielle pour détecter et expliquer les
+anomalies. Puis je détaillerai la conception de la solution et la méthodologie
+adoptée, de la collecte des métriques jusqu'à la génération des alertes. Enfin, je
+présenterai la réalisation technique et les interfaces développées, avant de
+conclure par un bilan de cette expérience enrichissante.
+
+\vspace{0.5cm}
+\noindent\textbf{Mots clés :} Supervision réseau / Découverte d'équipements /
+Détection d'anomalies / Machine Learning / Isolation Forest / Maintenance prédictive /
+Intelligence artificielle / FastAPI / Streamlit / Automatisation.
+
+\setcounter{page}{1}
+\pagenumbering{arabic}
+
+% =====================================================================
+%  CHAPITRE 1
+% =====================================================================
+\chapter{Organisme d'accueil et problématique traitée}
+
+\section{Introduction}
+Dans ce premier chapitre, nous explorerons l'environnement de travail dans lequel
+s'est déroulé mon stage. Nous présenterons l'organisme d'accueil, son historique,
+ses activités et sa structure organisationnelle. Nous exposerons ensuite la
+problématique traitée et le travail demandé, la démarche méthodologique adoptée,
+ainsi que le chronogramme des tâches menées durant le stage.
+
+\section{Présentation de l'entreprise}
+
+\subsection{Présentation générale}
+[Nom de l'entreprise] est une structure évoluant dans le domaine des technologies
+de l'information et des télécommunications. Elle propose à ses clients une gamme de
+services couvrant l'ingénierie réseau, la supervision d'infrastructures, la
+sécurité des systèmes et le développement de solutions logicielles. Son objectif
+est d'accompagner les organisations dans la modernisation et la fiabilisation de
+leurs infrastructures numériques.
+
+\subsection{Historique}
+[Nom de l'entreprise] a été fondée en [année de création]. Depuis sa création,
+elle n'a cessé d'élargir son domaine d'expertise et d'améliorer la qualité de ses
+services afin de répondre à l'évolution rapide des besoins technologiques de ses
+clients. Elle s'est progressivement spécialisée dans les solutions de supervision
+et d'automatisation, en intégrant les technologies émergentes telles que
+l'intelligence artificielle et l'analyse de données.
+
+\subsection{Activités}
+L'entreprise joue un rôle important à travers ses services qui touchent de
+nombreux aspects des systèmes d'information de ses clients. Elle est notamment
+responsable de la conception, du déploiement et de la maintenance
+d'infrastructures réseau, ainsi que de la mise en place de solutions de
+monitoring et de sécurité. Elle offre des services aussi bien aux entreprises
+qu'aux particuliers pour tout ce qui concerne la connectivité, la disponibilité et
+la protection des systèmes.
+
+\subsection{L'identité visuelle}
+Le logo de [Nom de l'entreprise] reflète les valeurs de l'organisation :
+innovation, fiabilité et proximité. La figure suivante présente l'identité
+visuelle de l'entreprise.
+
+\begin{figure}[H]
+\figplaceholder[4cm]{Figure~1 : Logo de [Nom de l'entreprise]\\(insérer le logo de l'entreprise)}
+\caption{Logo de l'entreprise}
+\label{fig:logo}
+\end{figure}
+
+\subsection{Organisation générale de l'entreprise}
+L'organisation de [Nom de l'entreprise] est modélisée par l'organigramme présenté
+dans la figure ci-dessous. Elle se compose de plusieurs départements
+(direction générale, département technique, département commercial,
+support et administration) travaillant de manière coordonnée.
+
+\begin{figure}[H]
+\figplaceholder[5cm]{Figure~2 : Organigramme de l'entreprise\\(insérer l'organigramme)}
+\caption{Organisation générale de l'entreprise}
+\label{fig:organigramme}
+\end{figure}
+
+\section{Problématique traitée et travail demandé}
+Dans les environnements informatiques actuels, la disponibilité et la fiabilité
+des réseaux sont essentielles. Les infrastructures, composées d'un nombre croissant
+d'équipements hétérogènes (postes de travail, serveurs, équipements réseau,
+terminaux mobiles), doivent être surveillées en temps réel pour prévenir toute
+interruption. La détection réactive des anomalies, c'est-à-dire après leur
+apparition, entraîne souvent des temps d'arrêt, des pertes de productivité et des
+risques accrus pour la sécurité. Une approche proactive, capable non seulement de
+détecter mais aussi d'\emph{expliquer} les anomalies, est donc indispensable pour
+garantir performance et protection.
+
+Un autre défi majeur réside dans le fait que les administrateurs sont fréquemment
+submergés par un grand nombre d'alertes brutes, sans indication claire sur la
+cause du problème ni sur la marche à suivre pour le résoudre. Il en résulte une
+perte de temps précieuse dans le diagnostic manuel.
+
+Le travail demandé consistait donc à concevoir et à développer un système de
+supervision proactive et intelligente d'une infrastructure réseau, baptisé
+\textbf{AI Network Copilot}, permettant de :
+\begin{itemize}[leftmargin=*]
+\item découvrir automatiquement les équipements présents sur le réseau et les
+identifier (adresse IP, adresse MAC, fabricant, type d'appareil) ;
+\item collecter en continu les métriques réseau clés (latence, taux d'erreurs,
+trafic) ;
+\item détecter les anomalies à l'aide d'un moteur hybride combinant des règles
+métier et un modèle d'intelligence artificielle ;
+\item identifier automatiquement la \emph{cause probable} de chaque anomalie et
+proposer un conseil de diagnostic à l'administrateur ;
+\item visualiser en temps réel l'état du réseau et les alertes via un tableau de
+bord interactif, et exposer l'ensemble des données à travers une API REST.
+\end{itemize}
+
+\section{Démarche -- Méthodologie utilisée}
+Pour répondre à cette problématique, la méthodologie suivante a été adoptée :
+\begin{itemize}[leftmargin=*]
+\item \textbf{\diamonditem\ Analyse des besoins et des technologies existantes :}
+étude des solutions de monitoring du marché, identification de leurs limites
+(seuils statiques, absence d'explication des causes) et choix d'outils adaptés
+(Python, FastAPI, Streamlit, scikit-learn) pour collecter, analyser et visualiser
+les métriques.
+\item \textbf{\diamonditem\ Conception de l'architecture du système :}
+élaboration d'une architecture modulaire intégrant la collecte des métriques et la
+découverte des équipements, la détection d'anomalies par IA, l'identification des
+causes, la visualisation temps réel et la génération d'alertes.
+\item \textbf{\diamonditem\ Développement et implémentation :} mise en place du
+collecteur (\textit{ping}, découverte ARP), de la base de données SQLite, du
+moteur de détection (règles + \textit{Isolation Forest}), de l'API FastAPI et du
+tableau de bord Streamlit.
+\item \textbf{\diamonditem\ Intégration temps réel :} mise en place de canaux
+WebSocket pour la diffusion en direct des métriques, des alertes et de la
+topologie vers le tableau de bord.
+\item \textbf{\diamonditem\ Tests et validation :} évaluation de la précision de la
+détection, contrôle du bon fonctionnement des différents services, empaquetage de
+l'application et ajustement des seuils pour garantir la fiabilité de la solution.
+\end{itemize}
+
+\section{Chronogramme des tâches menées durant le stage}
+La figure suivante présente le chronogramme (diagramme de Gantt) des principales
+tâches réalisées durant la période du stage.
+
+\begin{figure}[H]
+\figplaceholder[5.5cm]{Figure~3 : Chronogramme (diagramme de Gantt) des tâches\\(insérer le planning du stage)}
+\caption{Chronogramme des tâches menées durant le stage}
+\label{fig:gantt}
+\end{figure}
+
+\noindent\textbf{Explication :}
+
+\noindent\textbf{Tâche 1 -- Recherche et auto-formation :}
+\begin{itemize}[leftmargin=*,nosep]
+\item Recherche approfondie sur les technologies existantes de détection
+d'anomalies réseau.
+\item Étude des bibliothèques Python (scikit-learn, pandas, NumPy) pour le
+développement du modèle d'IA.
+\item Prise en main des frameworks FastAPI (API) et Streamlit (tableau de bord).
+\item Documentation des meilleures pratiques et des approches de projets
+similaires.
+\end{itemize}
+
+\noindent\textbf{Tâche 2 -- Conception du système :}
+\begin{itemize}[leftmargin=*,nosep]
+\item Définition de l'architecture globale et du schéma de la base de données.
+\item Établissement d'un contrat d'API entre le module de collecte/détection et le
+tableau de bord.
+\item Conception du diagramme de flux du système de supervision proactive.
+\end{itemize}
+
+\noindent\textbf{Tâche 3 -- Collecte et découverte :}
+\begin{itemize}[leftmargin=*,nosep]
+\item Développement du collecteur de métriques (\textit{ping}) et de la découverte
+automatique des équipements (balayage de sous-réseau, cache ARP, sondes TCP).
+\item Identification des équipements (adresse MAC, fabricant via OUI, nom d'hôte,
+type d'appareil) et stockage dans la base SQLite.
+\end{itemize}
+
+\noindent\textbf{Tâche 4 -- Détection, API et visualisation :}
+\begin{itemize}[leftmargin=*,nosep]
+\item Implémentation du moteur de détection hybride (règles + \textit{Isolation
+Forest}) avec identification de la cause et conseil associé.
+\item Développement de l'API REST (FastAPI) et du tableau de bord temps réel
+(Streamlit) avec graphiques Plotly et diffusion WebSocket.
+\item Empaquetage de l'application et validation de l'ensemble de la chaîne.
+\end{itemize}
+
+\section{Conclusion : principales observations et constatations}
+Ce chapitre a permis de présenter l'entreprise d'accueil, de définir la
+problématique traitée et de détailler la démarche méthodologique ainsi que les
+principales tâches effectuées durant le stage. La principale constatation est que
+la supervision réactive traditionnelle est insuffisante face à la complexité
+croissante des réseaux : il est nécessaire de disposer d'un système capable non
+seulement de détecter les anomalies, mais aussi d'en expliquer la cause pour
+accélérer le diagnostic. C'est précisément l'objectif d'\textbf{AI Network
+Copilot}, dont la conception est détaillée dans le chapitre suivant.
+
+% =====================================================================
+%  CHAPITRE 2
+% =====================================================================
+\chapter{Analyse des besoins et conception}
+
+\section{Introduction}
+Dans ce chapitre, nous aborderons l'étude de l'existant, la solution proposée,
+ainsi que la méthodologie et le processus retenus pour le système de supervision
+proactive \textbf{AI Network Copilot}. Cette étape est cruciale pour définir les
+fonctionnalités nécessaires et pour planifier la manière dont le système sera
+construit.
+
+\section{Étude de l'existant}
+Au cours des dernières années, les infrastructures réseau sont devenues de plus en
+plus complexes, intégrant des postes de travail, des serveurs, des équipements
+d'interconnexion et de nombreux terminaux mobiles. Dans beaucoup d'organisations,
+la surveillance repose encore sur des solutions \textbf{réactives}, où les
+incidents ne sont traités qu'après leur apparition. Cette approche entraîne des
+interruptions de service coûteuses, une perte de productivité et parfois des
+failles de sécurité exploitables.
+
+Bien que certaines plateformes de monitoring classiques (comme \textit{Nagios},
+\textit{Zabbix} ou \textit{PRTG}) permettent de visualiser l'état des ressources,
+elles présentent plusieurs limites :
+\begin{itemize}[leftmargin=*]
+\item \textbf{Alertes basées sur des seuils statiques :} ces seuils, fixés
+manuellement, génèrent soit trop de fausses alertes, soit passent à côté de
+dégradations progressives des performances.
+\item \textbf{Absence d'explication :} elles signalent qu'un problème existe, mais
+n'indiquent ni sa cause probable ni la marche à suivre pour le résoudre.
+\item \textbf{Configuration lourde :} leur déploiement et leur paramétrage
+requièrent souvent une expertise importante et un effort de maintenance continu.
+\item \textbf{Faible capacité prédictive :} la plupart ne s'appuient pas sur des
+techniques d'apprentissage automatique pour anticiper les incidents.
+\end{itemize}
+
+Face à ces limites, l'adoption d'une solution \textbf{intelligente, légère et
+explicative}, basée sur l'intelligence artificielle, devient pertinente.
+L'objectif est de détecter les anomalies, d'en identifier automatiquement la
+cause, d'optimiser la disponibilité des services et de guider l'administrateur
+dans la résolution, tout en réduisant les coûts liés aux arrêts imprévus.
+
+\section{Solution}
+Pour surmonter les limites des approches classiques de supervision réseau, nous
+avons conçu une solution innovante de surveillance proactive baptisée
+\textbf{AI Network Copilot}, s'appuyant sur l'intelligence artificielle et sur des
+outils logiciels modernes et légers. L'objectif est de détecter et d'expliquer les
+incidents avant qu'ils n'affectent durablement les utilisateurs ou la
+disponibilité des services.
+
+Notre solution repose sur \textbf{quatre piliers principaux} :
+
+\subsection*{\diamonditem\ Collecte des données et découverte du réseau}
+La collecte des métriques réseau est réalisée par un \textbf{collecteur} qui
+mesure, pour chaque équipement, la latence, le taux d'erreurs et le trafic. Le
+système intègre également un mécanisme de \textbf{découverte automatique} des
+équipements du réseau : balayage de sous-réseau par \textit{ping}, lecture du
+cache ARP/voisinage (\textit{Get-NetNeighbor}), balayage TCP et \textit{ping} de
+diffusion. Chaque équipement est ensuite identifié (adresse IP, adresse MAC,
+fabricant déduit de l'OUI, nom d'hôte, type d'appareil). Ces données sont
+centralisées et historisées dans une base de données \textbf{SQLite}.
+
+\subsection*{\diamonditem\ Détection d'anomalies par intelligence artificielle}
+Les données collectées alimentent un \textbf{moteur de détection hybride} à deux
+couches :
+\begin{itemize}[leftmargin=*,nosep]
+\item une couche de \textbf{règles métier} qui détecte les dépassements de seuils
+(latence, taux d'erreurs) et identifie la cause probable ;
+\item une couche de \textbf{Machine Learning} fondée sur l'algorithme
+\textit{Isolation Forest} de la bibliothèque scikit-learn. Ce modèle
+non supervisé apprend le comportement normal du réseau et détecte les mesures
+statistiquement anormales, y compris celles que des seuils fixes ne captureraient
+pas.
+\end{itemize}
+Une mesure est considérée comme anormale si \emph{l'une} des deux couches se
+déclenche. Le système identifie alors la \textbf{cause probable} et fournit un
+\textbf{conseil de diagnostic} ainsi qu'un \textbf{score de confiance}.
+
+\subsection*{\diamonditem\ Visualisation en temps réel}
+Pour offrir une vue globale et exploitable de l'infrastructure, un tableau de bord
+interactif a été développé avec \textbf{Streamlit} et \textbf{Plotly}. Il permet de
+visualiser en temps réel les métriques de performance, les anomalies détectées, la
+liste des équipements et une \textbf{vue topologique} du réseau. La mise à jour en
+direct est assurée par des canaux \textbf{WebSocket}, avec repli automatique sur des
+requêtes HTTP.
+
+\subsection*{\diamonditem\ Alertes et identification des causes}
+Lorsqu'une anomalie est détectée, le système génère une \textbf{alerte enrichie}
+comprenant l'équipement concerné, la cause probable, un conseil de diagnostic et un
+score de confiance. Cette approche transforme un simple signalement en une
+information directement actionnable par l'administrateur.
+
+Cette solution, combinant un collecteur léger, une base SQLite, un moteur de
+détection hybride, une API REST (FastAPI) et un tableau de bord temps réel
+(Streamlit), permet de faire passer la supervision réseau d'une approche
+\textbf{réactive} à une approche \textbf{prédictive, proactive et explicative},
+garantissant une meilleure disponibilité et une réduction du temps de diagnostic.
+
+\section{Méthodologie et processus}
+Cette partie aborde l'approche utilisée pour atteindre les objectifs du projet et
+examine de plus près la manière dont le système est mis en œuvre.
+
+\subsection{Architecture du système}
+Le système est organisé en modules découplés qui communiquent via la base de
+données et l'API :
+\begin{itemize}[leftmargin=*,nosep]
+\item \textbf{Collector} : découverte des équipements et collecte des métriques.
+\item \textbf{Base de données (SQLite)} : stockage des métriques et des propriétés
+des équipements.
+\item \textbf{Detection} : règles métier + modèle \textit{Isolation Forest} +
+identification des causes.
+\item \textbf{API (FastAPI)} : exposition des métriques, alertes, hôtes,
+équipements et topologie (REST + WebSocket).
+\item \textbf{Dashboard (Streamlit)} : visualisation temps réel et interaction
+utilisateur.
+\end{itemize}
+
+\begin{figure}[H]
+\figplaceholder[6cm]{Figure~4 : Architecture modulaire d'AI Network Copilot\\Collector $\rightarrow$ Base SQLite $\rightarrow$ Detection (Règles + ML) $\rightarrow$ API FastAPI $\rightarrow$ Dashboard Streamlit\\(insérer le schéma d'architecture)}
+\caption{Architecture globale du système AI Network Copilot}
+\label{fig:archi}
+\end{figure}
+
+\subsection{Diagramme de flux du système}
+La figure suivante présente le processus complet du système de surveillance
+proactive grâce à l'IA.
+
+\begin{figure}[H]
+\figplaceholder[6cm]{Figure~5 : Schéma de processus complet du système de surveillance proactive grâce à l'IA\\(Data Collection $\rightarrow$ Feature Extraction $\rightarrow$ Détection Règles + Isolation Forest $\rightarrow$ Identification de la cause $\rightarrow$ Visualisation $\rightarrow$ Alerting)}
+\caption{Schéma de processus complet du système de surveillance proactive grâce à l'IA}
+\label{fig:flux}
+\end{figure}
+
+\noindent\textbf{Data Collection :}
+Le système assure une collecte continue et centralisée des métriques réseau
+provenant de chaque équipement découvert. Ces données incluent des indicateurs
+critiques tels que la latence, le taux d'erreurs et le trafic. Grâce au collecteur
+et à la base SQLite, la collecte est automatisée, fiable et continue, garantissant
+une base de données exploitable pour l'analyse en temps réel et la détection
+proactive d'anomalies.
+
+\noindent\textbf{Feature Extraction :}
+Sélection des indicateurs réseau les plus pertinents pour la détection
+d'anomalies (latence, taux d'erreurs, trafic), afin d'alimenter le modèle d'IA
+avec des données significatives et de maximiser la précision des prédictions.
+
+\noindent\textbf{AI Model Inference (Isolation Forest + Règles) :}
+Le moteur hybride analyse les indicateurs sélectionnés pour déterminer, en temps
+réel, si le comportement observé est normal ou anormal. La couche règles capture
+les dépassements de seuils explicites tandis que l'\textit{Isolation Forest}
+capture les anomalies statistiques subtiles.
+
+\noindent\textbf{Identification de la cause :}
+En cas d'anomalie, le système déduit la cause probable (par ex. machine
+inaccessible, perte de paquets, congestion, saturation de bande passante, panne
+WAN, etc.) à partir de la combinaison des valeurs mesurées, et associe à chaque
+cause un conseil de diagnostic.
+
+\noindent\textbf{Visualisation :}
+Le système utilise un tableau de bord Streamlit/Plotly pour afficher en temps réel
+les résultats, avec des graphiques interactifs des indicateurs de santé du réseau,
+facilitant le suivi et la prise de décision.
+
+\noindent\textbf{Alerting \& actions :}
+Lorsqu'une anomalie est détectée, le système produit une alerte enrichie
+(cause + conseil + score de confiance) et la diffuse en temps réel vers le tableau
+de bord via WebSocket, permettant une réaction rapide de l'administrateur.
+
+\section{Conclusion}
+Ce chapitre a permis de concevoir une solution adaptée en analysant les limites
+des solutions existantes. La méthodologie suivie a structuré le système en modules
+cohérents (collecte, détection, API, visualisation) et a préparé sa mise en œuvre,
+en mettant l'accent sur une approche méthodique, progressive et explicative. Le
+chapitre suivant détaille la réalisation technique de cette conception.
+
+% =====================================================================
+%  CHAPITRE 3
+% =====================================================================
+\chapter{Réalisation}
+
+\section{Introduction}
+Dans ce chapitre, je présenterai les choix technologiques et les environnements de
+développement qui ont guidé la réalisation du système \textbf{AI Network Copilot}.
+Je détaillerai ensuite les fonctionnalités implémentées, les interfaces
+développées, ainsi que les tests effectués pour valider le bon fonctionnement du
+système.
+
+\section{Choix technologiques et environnements de développement}
+
+\subsection{Les technologies et les outils utilisés}
+Dans ce projet, un ensemble de technologies, de bibliothèques et d'outils logiciels
+a été mis en œuvre pour concevoir un système léger et complet de supervision
+réseau, assurant la collecte, l'analyse et la visualisation intelligente des
+métriques, ainsi que la détection et l'explication proactive des anomalies. La
+section suivante présente une description succincte de chaque outil et de son rôle.
+
+\vspace{0.3cm}
+\noindent\textbf{1. Python.}
+Python est un langage de programmation de haut niveau, connu pour sa simplicité et
+sa lisibilité. Grâce à son large écosystème de bibliothèques, il a été le langage
+principal utilisé pour implémenter l'ensemble du système (collecte, détection, API
+et tableau de bord).
+
+\begin{figure}[H]
+\figplaceholder[3cm]{Figure~6 : Logo Python}
+\caption{Logo du langage Python}
+\label{fig:python}
+\end{figure}
+
+\noindent\textbf{2. FastAPI.}
+FastAPI est un framework web moderne et performant pour construire des API REST en
+Python. Il a été utilisé pour exposer les endpoints du système
+(\texttt{/metrics/latest}, \texttt{/alerts}, \texttt{/hosts}, \texttt{/devices},
+\texttt{/topology}, \texttt{/ping/\{host\}}, \texttt{/health}) et pour la
+communication temps réel via WebSocket. Il fournit également une documentation
+interactive automatique (Swagger).
+
+\begin{figure}[H]
+\figplaceholder[3cm]{Figure~7 : Logo FastAPI}
+\caption{Logo du framework FastAPI}
+\label{fig:fastapi}
+\end{figure}
+
+\noindent\textbf{3. Streamlit.}
+Streamlit est un framework Python permettant de créer rapidement des applications
+web de visualisation de données. Il a été utilisé pour développer le tableau de
+bord interactif temps réel du système.
+
+\begin{figure}[H]
+\figplaceholder[3cm]{Figure~8 : Logo Streamlit}
+\caption{Logo du framework Streamlit}
+\label{fig:streamlit}
+\end{figure}
+
+\noindent\textbf{4. SQLite.}
+SQLite est un système de gestion de base de données relationnelle léger, sans
+serveur. Il stocke les métriques réseau (table \texttt{network\_metrics}) et les
+propriétés des équipements (table \texttt{device\_properties}), assurant
+l'historisation et l'interrogation efficace des données.
+
+\begin{figure}[H]
+\figplaceholder[3cm]{Figure~9 : Logo SQLite}
+\caption{Logo de SQLite}
+\label{fig:sqlite}
+\end{figure}
+
+\noindent\textbf{5. scikit-learn (Isolation Forest).}
+scikit-learn est une bibliothèque Python de référence pour le Machine Learning.
+Dans ce projet, elle permet la conception et l'entraînement du modèle de détection
+d'anomalies non supervisé fondé sur l'algorithme \textit{Isolation Forest}, capable
+d'identifier les comportements statistiquement anormaux du réseau.
+
+\begin{figure}[H]
+\figplaceholder[3cm]{Figure~10 : Logo scikit-learn}
+\caption{Logo de scikit-learn}
+\label{fig:sklearn}
+\end{figure}
+
+\noindent\textbf{6. Plotly.}
+Plotly est une bibliothèque de visualisation interactive. Elle est utilisée dans le
+tableau de bord pour tracer des courbes temporelles de latence, de trafic et de
+taux d'erreurs, ainsi que pour la mise en évidence visuelle des anomalies.
+
+\noindent\textbf{7. WebSocket.}
+Le protocole WebSocket permet une communication bidirectionnelle en temps réel
+entre le serveur (API) et le client (tableau de bord). Il est utilisé pour diffuser
+en continu les mises à jour des métriques, des alertes et de la topologie.
+
+\noindent\textbf{8. Bibliothèques Python complémentaires.}
+\begin{itemize}[leftmargin=*,nosep]
+\item \textbf{pandas} : manipulation et analyse des données ; structuration et
+préparation des métriques avant leur passage au modèle d'IA.
+\item \textbf{NumPy} : calcul numérique efficace sur des tableaux, utilisé lors du
+traitement des données.
+\item \textbf{joblib} : sérialisation et sauvegarde du modèle entraîné
+(\texttt{model.pkl}) afin de le recharger rapidement en production.
+\item \textbf{scapy} et \textbf{ping3} : découverte réseau (ARP) et mesure de la
+latence par \textit{ping}.
+\end{itemize}
+
+\noindent\textbf{9. Docker.}
+Docker permet de conteneuriser l'API et le tableau de bord afin de faciliter leur
+déploiement de manière reproductible, indépendamment de l'environnement hôte.
+
+\noindent\textbf{10. Git et Visual Studio Code.}
+Git a été utilisé pour le versionnement du code et le travail collaboratif. Visual
+Studio Code, éditeur développé par Microsoft, a servi à l'écriture, à l'édition et
+au débogage des scripts Python du projet.
+
+\noindent\textbf{11. PyInstaller.}
+PyInstaller a été utilisé pour empaqueter l'application sous forme d'un exécutable
+Windows autonome (\texttt{AI-Network-Copilot.exe}), lancé par un \textit{launcher}
+qui orchestre les trois services (collecteur, API, tableau de bord).
+
+\subsection{Le matériel utilisé}
+Le développement et les tests de ce projet ont été réalisés sur un ordinateur
+portable présentant les spécifications suivantes.
+
+\begin{table}[H]
+\centering
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{|>{\raggedright\arraybackslash}p{4cm}|>{\raggedright\arraybackslash}p{6cm}|}
+\hline
+\rowcolor{grisclair}
+\multicolumn{2}{|c|}{\textbf{PC1 -- Caractéristiques}} \\
+\hline
+Processeur & Intel Core i5 \\
+\hline
+RAM & 16 Go \\
+\hline
+Système d'exploitation & Windows 11 \\
+\hline
+Stockage & SSD \\
+\hline
+\end{tabular}
+\caption{Caractéristiques du PC de développement}
+\label{tab:pc}
+\end{table}
+
+\section{Les fonctionnalités réalisées}
+Le système développé intègre les fonctionnalités suivantes :
+
+\begin{itemize}[leftmargin=*]
+\item \textbf{\checkitem\ Découverte automatique du réseau :} le collecteur
+détecte automatiquement les équipements présents sur le(s) sous-réseau(x) via un
+balayage \textit{ping}, la lecture du cache ARP/voisinage
+(\textit{Get-NetNeighbor}), des sondes TCP et un \textit{ping} de diffusion. Chaque
+équipement est identifié (adresse IP, adresse MAC, fabricant via l'OUI, nom d'hôte,
+type d'appareil).
+
+\item \textbf{\checkitem\ Collecte et prétraitement des données :} les métriques
+(latence, taux d'erreurs, trafic) sont mesurées puis nettoyées et structurées avant
+d'être stockées dans la base SQLite, garantissant la qualité et la cohérence des
+données utilisées par le système.
+
+\item \textbf{\checkitem\ Extraction des caractéristiques :} les indicateurs les
+plus pertinents pour la détection d'anomalies (latence, taux d'erreurs, trafic)
+sont sélectionnés afin d'alimenter le modèle d'IA avec des données significatives.
+
+\item \textbf{\checkitem\ Développement et entraînement du modèle
+(Isolation Forest) :} scikit-learn a été utilisé pour concevoir et entraîner un
+modèle non supervisé capable de détecter les comportements anormaux. Le modèle est
+sauvegardé (\texttt{model.pkl}) et rechargé en cache pour des inférences rapides,
+individuelles ou par lot.
+
+\item \textbf{\checkitem\ Détection hybride et identification des causes :} un
+moteur combine des règles métier (seuils de latence et de taux d'erreurs) et le
+modèle ML. Une mesure est anormale si l'une des deux couches se déclenche. Le
+système déduit alors la cause probable (machine inaccessible, perte de paquets,
+congestion, saturation de bande passante, panne WAN, problème DNS, etc.) et fournit
+un conseil de diagnostic ainsi qu'un score de confiance.
+
+\item \textbf{\checkitem\ API REST et temps réel :} l'API FastAPI expose les
+métriques, alertes, hôtes, équipements et la topologie du réseau. Des canaux
+WebSocket (\texttt{/ws/metrics}, \texttt{/ws/alerts}, \texttt{/ws/topology})
+diffusent les mises à jour en temps réel.
+
+\item \textbf{\checkitem\ Visualisation des résultats (Dashboard) :} le tableau de
+bord Streamlit/Plotly affiche en temps réel les métriques, les alertes enrichies,
+la liste des équipements et une vue topologique du réseau, facilitant le suivi
+continu et la prise de décision rapide. Une fonction de \textit{ping} en direct
+permet de tester un hôte à la demande.
+
+\item \textbf{\checkitem\ Empaquetage et déploiement :} l'application est
+distribuée sous forme d'exécutable Windows autonome et peut également être déployée
+via Docker. Un \textit{launcher} orchestre le démarrage coordonné des trois
+services.
+
+\item \textbf{\checkitem\ Supervision proactive et explicative :} la combinaison
+de toutes les fonctionnalités précédentes forme un système complet capable de
+détecter, d'expliquer et de signaler les anomalies en temps réel, assurant une
+meilleure disponibilité et un diagnostic accéléré.
+\end{itemize}
+
+\section{Les interfaces et le prototype}
+
+\subsection{Interface principale du tableau de bord}
+La figure ci-dessous présente la vue principale du tableau de bord temps réel, avec
+les indicateurs clés (KPIs), l'état global du réseau et les courbes de performance.
+
+\begin{figure}[H]
+\figplaceholder[6cm]{Figure~11 : Vue principale du tableau de bord AI Network Copilot\\(insérer la capture d'écran du dashboard Streamlit)}
+\caption{Vue principale du tableau de bord temps réel}
+\label{fig:dashboard}
+\end{figure}
+
+\subsection{Visualisation temps réel des métriques}
+Les graphiques interactifs (Plotly) affichent l'évolution de la latence, du trafic
+et du taux d'erreurs, avec mise en évidence des points d'anomalie.
+
+\begin{figure}[H]
+\figplaceholder[6cm]{Figure~12 : Courbes temporelles de latence / trafic / taux d'erreurs\\(insérer la capture d'écran des graphiques)}
+\caption{Visualisation temps réel des métriques réseau}
+\label{fig:metrics}
+\end{figure}
+
+\subsection{Liste et identification des équipements découverts}
+Le système affiche la liste des équipements découverts avec leurs informations
+(adresse IP, adresse MAC, fabricant, type d'appareil, dernière observation).
+
+\begin{figure}[H]
+\figplaceholder[6cm]{Figure~13 : Liste des équipements découverts sur le réseau\\(insérer la capture d'écran de la table des devices)}
+\caption{Équipements découverts et identifiés}
+\label{fig:devices}
+\end{figure}
+
+\subsection{Vue topologique du réseau}
+La vue topologique représente les équipements sous forme de nœuds reliés par des
+liens, colorés selon leur type et leur état.
+
+\begin{figure}[H]
+\figplaceholder[6cm]{Figure~14 : Vue topologique du réseau\\(insérer la capture d'écran de la topologie)}
+\caption{Vue topologique du réseau}
+\label{fig:topology}
+\end{figure}
+
+\subsection{Détection d'anomalies et identification des causes}
+Les figures ci-dessous illustrent la détection d'une anomalie ainsi que l'alerte
+enrichie générée par le système, comprenant la cause probable et le conseil de
+diagnostic.
+
+\begin{figure}[H]
+\figplaceholder[6cm]{Figure~15 : Anomalie détectée avec identification de la cause et conseil\\(insérer la capture d'écran de l'alerte enrichie)}
+\caption{Anomalie détectée avec cause probable et conseil de diagnostic}
+\label{fig:alert}
+\end{figure}
+
+\subsection{Documentation de l'API}
+L'API FastAPI fournit une documentation interactive (Swagger) accessible via
+\texttt{/docs}, permettant de tester directement les endpoints.
+
+\begin{figure}[H]
+\figplaceholder[6cm]{Figure~16 : Documentation interactive de l'API (Swagger)\\(insérer la capture d'écran de /docs)}
+\caption{Documentation interactive de l'API (Swagger)}
+\label{fig:swagger}
+\end{figure}
+
+\section{Tests et validation}
+Plusieurs tests ont été menés pour valider le bon fonctionnement de la solution :
+\begin{itemize}[leftmargin=*,nosep]
+\item \textbf{Tests unitaires du moteur de détection :} vérification, sur des cas
+types (machine inaccessible, congestion, perte de paquets, panne WAN, etc.), de
+l'exactitude de l'identification de la cause et de la cohérence du conseil associé.
+\item \textbf{Tests d'intégration :} validation de la chaîne complète
+collecteur $\rightarrow$ base SQLite $\rightarrow$ détection $\rightarrow$ API
+$\rightarrow$ tableau de bord.
+\item \textbf{Tests temps réel :} contrôle de la diffusion WebSocket et du repli
+HTTP en cas d'indisponibilité.
+\item \textbf{Tests de robustesse :} gestion des cas d'erreur (hôte injoignable,
+réseau de type \textit{hotspot}, base vide) et repli sur des données simulées pour
+garantir la continuité de l'affichage.
+\end{itemize}
+Ces tests ont confirmé que la solution détecte et signale rapidement les anomalies,
+tout en fournissant une explication exploitable de leur cause probable.
+
+% =====================================================================
+%  CONCLUSION GÉNÉRALE
+% =====================================================================
+\chapter*{Conclusion générale}
+\addcontentsline{toc}{chapter}{Conclusion générale}
+\markboth{Conclusion générale}{Conclusion générale}
+
+Au cours de ce projet, j'ai travaillé sur le développement d'\textbf{AI Network
+Copilot}, un système de supervision réseau capable de découvrir automatiquement les
+équipements connectés, de collecter leurs métriques, de détecter les comportements
+anormaux et d'en identifier la cause probable. La problématique principale était
+d'assurer une supervision \emph{proactive, fiable et explicative} du réseau afin de
+réduire les interruptions, d'accélérer le diagnostic et de renforcer la sécurité.
+
+La démarche méthodologique adoptée a impliqué plusieurs étapes clés : l'analyse des
+besoins et des solutions existantes, la conception d'une architecture modulaire, la
+collecte et le prétraitement des métriques, le développement d'un moteur de
+détection hybride (règles métier + \textit{Isolation Forest}), ainsi que la
+réalisation d'une API REST et d'un tableau de bord temps réel. L'approche a intégré
+des outils et bibliothèques tels que Python, FastAPI, Streamlit, SQLite,
+scikit-learn, pandas, Plotly et Docker.
+
+Les fonctionnalités développées incluent la découverte et l'identification
+automatiques des équipements, la détection en temps réel des anomalies, l'analyse
+proactive des indicateurs clés (latence, taux d'erreurs, trafic), l'identification
+de la cause probable avec conseil de diagnostic, l'affichage dynamique des
+métriques, des alertes et de la topologie via un tableau de bord interactif, ainsi
+que l'empaquetage de l'application pour un déploiement simple. Ces fonctionnalités
+permettent de surveiller en continu l'état du réseau et d'anticiper les incidents.
+
+La solution développée s'est révélée performante pour détecter, expliquer et
+signaler rapidement les anomalies. Certaines améliorations pourraient être
+envisagées à l'avenir, notamment l'extension du modèle à de nouveaux indicateurs,
+l'ajout de seuils adaptatifs par équipement, l'intégration de notifications
+externes (courriel, messagerie) et l'usage de techniques d'apprentissage plus
+avancées pour renforcer encore la précision et la fiabilité du système.
+
+Ce projet a été très enrichissant tant sur le plan technique que méthodologique.
+J'ai acquis des compétences solides en conception et déploiement de systèmes de
+supervision réseau, en développement d'API et de tableaux de bord temps réel, ainsi
+qu'en Machine Learning appliqué à la détection d'anomalies. Sur le plan
+organisationnel, il m'a permis de structurer un projet complexe de manière cohérente
+et d'appréhender les défis liés à la mise en œuvre d'un système complet.
+
+Cette expérience a renforcé ma motivation à poursuivre une carrière dans les
+domaines de la supervision réseau, de la cybersécurité et du développement de
+solutions intelligentes, et m'a offert de nouvelles perspectives pour mon avenir
+professionnel.
+
+% =====================================================================
+%  RÉFÉRENCES
+% =====================================================================
+\chapter*{Références}
+\addcontentsline{toc}{chapter}{Références}
+\markboth{Références}{Références}
+
+\begin{enumerate}[label={[\arabic*]}]
+\item Python Software Foundation, \emph{Python Language Documentation}.
+\url{https://www.python.org/} [consulté en 2026].
+\item Sebastián Ramírez, \emph{FastAPI Documentation}.
+\url{https://fastapi.tiangolo.com/} [consulté en 2026].
+\item Streamlit Inc., \emph{Streamlit Documentation}.
+\url{https://docs.streamlit.io/} [consulté en 2026].
+\item SQLite Consortium, \emph{SQLite Documentation}.
+\url{https://www.sqlite.org/docs.html} [consulté en 2026].
+\item F. Pedregosa \emph{et al.}, \enquote{Scikit-learn: Machine Learning in
+Python}, \emph{Journal of Machine Learning Research}, vol.~12, 2011.
+\url{https://scikit-learn.org/} [consulté en 2026].
+\item F. T. Liu, K. M. Ting, Z.-H. Zhou, \enquote{Isolation Forest},
+\emph{IEEE International Conference on Data Mining (ICDM)}, 2008.
+\item Plotly Technologies Inc., \emph{Plotly Python Graphing Library}.
+\url{https://plotly.com/python/} [consulté en 2026].
+\item Docker Inc., \emph{Docker Documentation}.
+\url{https://docs.docker.com/} [consulté en 2026].
+\item Microsoft, \emph{Visual Studio Code Documentation}.
+\url{https://code.visualstudio.com/} [consulté en 2026].
+\end{enumerate}
+
+\end{document}
+
+
+
