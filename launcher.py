@@ -16,6 +16,16 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
+# Console encoding: the → arrow in the status menu raises UnicodeEncodeError
+# under the default cp1252 pipe encoding (redirected stdout). Force UTF-8 with
+# replacement errors so the launcher never dies printing a character.
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 VERSION = "1.0.0"
 UPDATE_URL = "https://api.github.com/repos/anomalyco/ai-network-copilot/releases/latest"
 
@@ -69,12 +79,28 @@ class Service:
         self.running = False
 
     def stop(self):
-        if self.process and self.process.poll() is None:
-            self.process.terminate()
+        if not self.process:
+            return
+        if self.process.poll() is not None:
+            self.running = False
+            return
+        if sys.platform == "win32":
+            # /T kills the whole process tree — uvicorn/streamlit can spawn
+            # children that survive a plain terminate(). /F is forceful.
             try:
-                self.process.wait(timeout=5)
+                subprocess.run(
+                    ["taskkill", "/PID", str(self.process.pid), "/T", "/F"],
+                    capture_output=True, timeout=10,
+                )
             except subprocess.TimeoutExpired:
-                self.process.kill()
+                pass
+        else:
+            self.process.terminate()
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+        self.running = False
 
     def status_line(self):
         symbol = "[OK]" if self.running else "[!!]"

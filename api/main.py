@@ -67,17 +67,27 @@ HOTSPOT_SUBNETS = [
 
 def _is_hotspot_network(devices):
     """Detect if the current network is a phone hotspot based on device IPs.
-    Returns True if the majority of devices are on known hotspot subnets."""
+
+    Returns True if the machine's own IP (Copilot Host) OR the gateway (Router)
+    is on a known phone-hotspot subnet, or if the majority of devices are.
+    Checking self/gateway makes the detection reliable even when AP isolation
+    only exposes the host machine to the collector."""
     if not devices:
         return False
+
+    def _on_hotspot_subnet(ip):
+        return any(ip.startswith(prefix) for prefix in HOTSPOT_SUBNETS)
+
     hotspot_count = 0
     for d in devices:
         ip = d.get("ip", "")
-        for prefix in HOTSPOT_SUBNETS:
-            if ip.startswith(prefix):
-                hotspot_count += 1
-                break
-    # If more than 50% of devices are on hotspot subnets, flag it
+        if _on_hotspot_subnet(ip):
+            hotspot_count += 1
+            dtype = d.get("device_type") or ""
+            # The machine itself or its gateway on a hotspot subnet is decisive
+            if "Copilot Host" in dtype or dtype == "Router":
+                return True
+    # Fallback: majority of devices on a hotspot subnet
     return hotspot_count > len(devices) / 2
 
 # Import detection bridge (Personne A's ML engine — replaces raw DB queries)
@@ -295,6 +305,11 @@ async def get_alerts_endpoint(limit: int = 50):
     except Exception as e:
         logger.error(f"Error fetching alerts: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch alerts")
+
+@app.get("/health")
+async def health_endpoint():
+    """Simple liveness probe (referenced by the launcher)."""
+    return {"status": "ok"}
 
 @app.get("/hosts", response_model=HostsResponse)
 async def get_hosts_endpoint():

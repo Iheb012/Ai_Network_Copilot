@@ -2,7 +2,7 @@
 
 A network monitoring and anomaly detection tool with real-time dashboard, automatic device discovery, fingerprinting, and ML-powered anomaly detection.
 
-**Version:** 1.0.0
+**Version:** 1.1.0
 
 ---
 
@@ -52,7 +52,6 @@ docs/                        Additional documentation
   schema_donnees.md          Data schema
 
 launcher.py                  Terminal launcher orchestrating all 3 services
-start.bat                    Windows batch launcher
 updater.py                   GitHub release update checker
 schema.sql                   Database schema (SQLite)
 ```
@@ -73,14 +72,17 @@ pip install -r collector\requirements.txt
 
 ### 2. Start all services
 
-**Option A — Launcher (recommended):**
+**Option A — App launcher (recommended):** double-click **`AI-Network-Copilot.exe`** in the project root.
+It starts the collector, API and dashboard together and shows a small terminal UI for status / update checks.
+The `.exe` wraps `launcher.py`; it is git-ignored (not committed), so rebuild it anytime with:
+
 ```batch
-python launcher.py
+pyinstaller --onefile --name "AI-Network-Copilot" --icon dashboard/static/app-icon.ico launcher.py
 ```
 
-**Option B — start.bat:**
+**Option B — Python launcher (source):**
 ```batch
-start.bat
+python launcher.py
 ```
 
 **Option C — Manually (3 terminals):**

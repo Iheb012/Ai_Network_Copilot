@@ -10,18 +10,26 @@ from sklearn.ensemble import IsolationForest
 # Chemin où on sauvegarde le modèle entraîné
 CHEMIN_MODELE = "../detection/model.pkl"
 
-def charger_donnees():
+def charger_donnees(heures=48):
     """
-    Charge les données depuis la base SQLite
-    et retourne un DataFrame Pandas propre
+    Charge les données depuis la base SQLite (période récente uniquement)
+    et retourne un DataFrame Pandas propre.
+
+    On limite aux dernières `heures` heures : l'ancien collecteur écrivait des
+    métriques SIMULÉES (latence uniforme 5-45 ms + erreurs aléatoires), ce qui
+    faussait la distribution apprise par l'Isolation Forest et déclenchait des
+    faux positifs quand les données RÉELLES sont arrivées (dérive de modèle).
     """
     connexion = sqlite3.connect("../data/network.db")
-    df = pd.read_sql("""
-        SELECT latency, error_rate, traffic, is_anomaly 
-        FROM network_metrics 
+    df = pd.read_sql(f"""
+        SELECT latency, error_rate, traffic, is_anomaly
+        FROM network_metrics
+        WHERE ts >= datetime('now', 'localtime', '-{heures} hours')
         ORDER BY ts ASC
     """, connexion)
     connexion.close()
+    # Nettoyage : latence nulle/vide ne porte aucun signal
+    df = df.dropna(subset=["latency"]).query("latency > 0")
     return df
 
 def entrainer_modele():

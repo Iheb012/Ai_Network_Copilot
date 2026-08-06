@@ -3,7 +3,7 @@ import streamlit.components.v1 as components
 import requests
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import os
 import base64
@@ -31,7 +31,7 @@ API_BASE_URL = "http://localhost:8000"
 #  SESSION STATE
 # ─────────────────────────────────────────────
 if "refresh_interval" not in st.session_state:
-    st.session_state.refresh_interval = 300  # 5 minutes default
+    st.session_state.refresh_interval = 60  # 1 minute default
 if "data_limit" not in st.session_state:
     st.session_state.data_limit = 100
 if "ping_result" not in st.session_state:
@@ -56,6 +56,23 @@ def _unwrap(data, fallback_keys=("metrics", "alerts", "hosts", "data", "results"
             if isinstance(v, list):
                 return v
     return []
+
+
+def _ss_cache(key, producer, ttl=30):
+    """Session-scoped TTL cache. Stops the dashboard hitting the API on every
+    rerun for data that barely changes (devices/hosts). Kept in session_state
+    so it survives Streamlit reruns without any global module state."""
+    import time as _t
+    now = _t.time()
+    cache = st.session_state.get("_fetch_cache", {})
+    entry = cache.get(key)
+    if entry and now - entry[0] < ttl:
+        return entry[1]
+    value = producer()
+    cache[key] = (now, value)
+    st.session_state["_fetch_cache"] = cache
+    return value
+
 
 def fetch_metrics(limit=100, force_http=False):
     # Use WebSocket cache only for small quick fetches, not for complete views
@@ -89,6 +106,9 @@ def fetch_alerts(limit=50):
         return []
 
 def fetch_hosts():
+    return _ss_cache("hosts", _fetch_hosts_impl)
+
+def _fetch_hosts_impl():
     try:
         resp = requests.get(f"{API_BASE_URL}/hosts", timeout=5)
         resp.raise_for_status()
@@ -99,6 +119,9 @@ def fetch_hosts():
         return []
 
 def fetch_hosts_detail():
+    return _ss_cache("hosts_detail", _fetch_hosts_detail_impl)
+
+def _fetch_hosts_detail_impl():
     try:
         resp = requests.get(f"{API_BASE_URL}/hosts/detail", timeout=5)
         resp.raise_for_status()
@@ -109,6 +132,9 @@ def fetch_hosts_detail():
         return []
 
 def fetch_devices():
+    return _ss_cache("devices", _fetch_devices_impl)
+
+def _fetch_devices_impl():
     try:
         resp = requests.get(f"{API_BASE_URL}/devices", timeout=5)
         resp.raise_for_status()
@@ -212,6 +238,11 @@ if HAS_AUTOREFRESH:
         interval=st.session_state.refresh_interval * 1000,
         key="datarefresh",
     )
+    # Track the autorefresh tick: it increments only when the timer actually
+    # fires (not on user interactions), so it reliably signals "a refresh
+    # happened" at any interval — no time-gap heuristic needed.
+    st.session_state["_ar_prev_tick"] = st.session_state.get("_ar_tick", -1)
+    st.session_state["_ar_tick"] = count
 else:
     st.warning("Auto-refresh not available. Install streamlit-autorefresh for live updates.")
 
@@ -425,52 +456,6 @@ if websocket_receiver and websocket_receiver != "":
         # Other error, log it but don't crash
         pass
 
-# Processed WebSocket message marker to prevent reprocessing
-if websocket_receiver and websocket_receiver != "" and websocket_receiver != st.session_state.last_processed_message:
-    try:
-        message_data = json.loads(websocket_receiver)
-        ws_type = message_data.get("wsType")
-        data = message_data.get("data")
-
-        if ws_type == "metrics" and isinstance(data, dict) and "data" in data:
-            # Update metrics data
-            st.session_state.latest_metrics = data["data"]
-            st.session_state.ws_metrics_connected = True
-        elif ws_type == "alerts" and isinstance(data, dict) and "data" in data:
-            # Update alerts data
-            st.session_state.latest_alerts = data["data"]
-            st.session_state.ws_alerts_connected = True
-        elif ws_type == "topology" and isinstance(data, dict) and "data" in data:
-            # Update topology data
-            st.session_state.latest_topology = data["data"]
-            st.session_state.ws_topology_connected = True
-        elif ws_type == "status":
-            # Update connection status for specific type
-            connected = data.get("connected", False)
-            ws_type_specific = data.get("type")
-            if ws_type_specific == "metrics":
-                st.session_state.ws_metrics_connected = connected
-            elif ws_type_specific == "alerts":
-                st.session_state.ws_alerts_connected = connected
-            elif ws_type_specific == "topology":
-                st.session_state.ws_topology_connected = connected
-
-        # Update overall connection status
-        metrics_conn = st.session_state.get('ws_metrics_connected', False)
-        alerts_conn = st.session_state.get('ws_alerts_connected', False)
-        topology_conn = st.session_state.get('ws_topology_connected', False)
-        st.session_state.ws_connected = metrics_conn or alerts_conn or topology_conn
-
-        # Mark this message as processed
-        st.session_state.last_processed_message = websocket_receiver
-
-    except json.JSONDecodeError:
-        # Invalid JSON, ignore
-        pass
-    except Exception as e:
-        # Other error, log it but don't crash
-        pass
-
 # Function to update WebSocket status in sidebar
 def update_ws_status():
     # Count connected WebSocket types
@@ -528,17 +513,20 @@ div[class^="block-"] {
     z-index: 2;
 }
 
-/* ── Black hole video fixed behind everything ── */
-#bh-video-bg {
+/* ── Spline 3D scene fixed behind everything ── */
+#spline-bg {
     position: fixed !important;
     top: 0 !important; left: 0 !important;
     width: 100vw !important; height: 100vh !important;
-    object-fit: cover !important;
     z-index: 0 !important;
     pointer-events: none !important;
     display: block !important;
+    opacity: 0.92 !important;
 }
-#bh-video-scrim {
+#spline-bg::part(loading-animation) {
+    display: none !important;   /* hide Spline's default spinner */
+}
+#spline-scrim {
     position: fixed !important;
     top: 0 !important; left: 0 !important;
     width: 100vw !important; height: 100vh !important;
@@ -847,6 +835,30 @@ section[data-testid="stSidebar"] * { color: #E0D7FF !important; }
     background: transparent !important;
 }
 
+/* ── Persistent segmented tab bar (replaces st.tabs) ── */
+[data-testid="stSegmentedControl"] [role="radiogroup"] {
+    background: transparent !important;
+    border-bottom: 1px solid rgba(123,0,255,0.3);
+    border-radius: 0 !important;
+    gap: 0;
+}
+[data-testid="stSegmentedControl"] button {
+    background: transparent !important;
+    border: none !important;
+    border-radius: 0 !important;
+    color: rgba(191,95,255,0.5) !important;
+    font-family: 'Share Tech Mono', monospace !important;
+    font-size: 0.72rem !important;
+    letter-spacing: 0.12em !important;
+    text-transform: uppercase !important;
+    padding: 0.6rem 1.2rem !important;
+}
+[data-testid="stSegmentedControl"] button[aria-checked="true"] {
+    color: #BF5FFF !important;
+    border-bottom: 2px solid #BF5FFF !important;
+    background: transparent !important;
+}
+
 /* ── Refresh progress ── */
 .prog-wrap { background:rgba(20,0,45,0.6); border:1px solid rgba(123,0,255,0.25); border-radius:8px; padding:0.7rem 1rem; margin-bottom:1rem; backdrop-filter:blur(8px); }
 .prog-label { font-size:0.65rem; color:rgba(191,95,255,0.55); letter-spacing:0.12em; text-transform:uppercase; margin-bottom:0.35rem; font-family:'Share Tech Mono',monospace; }
@@ -964,6 +976,87 @@ section[data-testid="stSidebar"] * { color: #E0D7FF !important; }
     82%  { opacity: 1; }
     100% { transform: translate(var(--ex), var(--ey)) rotate(var(--ang)) scale(1); opacity: 0; }
 }
+
+/* ── Motion FX: tab transitions & auto-refresh ── */
+.fx-tab-overlay {
+    position: fixed; inset: 0; z-index: 99999; pointer-events: none;
+    background: radial-gradient(circle at 50% 40%, rgba(191,95,255,0.20), rgba(8,3,20,0.92) 78%);
+    opacity: 0;
+    animation: fx-tab-fade 0.55s ease-out forwards;
+}
+@keyframes fx-tab-fade { 0%{opacity:0} 12%{opacity:1} 100%{opacity:0} }
+.fx-scanline {
+    position: fixed; left: 0; right: 0; top: 0; height: 2px; z-index: 99999; pointer-events: none;
+    background: linear-gradient(90deg, transparent, #BF5FFF, #FF4DFF, transparent);
+    box-shadow: 0 0 24px #BF5FFF;
+    opacity: 0;
+    animation: fx-scan 0.55s ease-out forwards;
+}
+@keyframes fx-scan { 0%{top:0;opacity:0} 15%{opacity:1} 100%{top:100vh;opacity:0} }
+.fx-refresh-ring {
+    position: fixed; top:50%; left:50%; z-index: 99999; pointer-events: none;
+    width: 70px; height: 70px; margin: -35px 0 0 -35px;
+    border: 2px solid rgba(0,255,136,0.5); border-radius: 50%;
+    opacity: 0; animation: fx-ring 0.9s ease-out 2 forwards;
+}
+@keyframes fx-ring { 0%{transform:scale(0.3);opacity:1} 100%{transform:scale(2.6);opacity:0} }
+.fx-dataflow {
+    position: fixed; bottom: 0; left: 0; height: 3px; z-index: 99999; pointer-events: none;
+    background: linear-gradient(90deg, #00FF88, #BF5FFF, #FF4DFF);
+    opacity: 0; animation: fx-flow 1.1s ease-out forwards;
+}
+@keyframes fx-flow { 0%{width:0;opacity:.9} 70%{opacity:.7} 100%{width:100%;opacity:0} }
+
+/* ── Motion: tab-switch staggered entrance ── */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes soft-in {
+  from { opacity: 0.55; }
+  to   { opacity: 1; }
+}
+body.fx-tab-enter [data-testid="stMainBlockContainer"] {
+  animation: fade-up 0.5s cubic-bezier(.2,.7,.3,1) both;
+}
+body.fx-tab-enter .kpi-card {
+  animation: fade-up 0.5s cubic-bezier(.2,.7,.3,1) both;
+}
+body.fx-tab-enter .kpi-card:nth-child(1) { animation-delay: .04s; }
+body.fx-tab-enter .kpi-card:nth-child(2) { animation-delay: .10s; }
+body.fx-tab-enter .kpi-card:nth-child(3) { animation-delay: .16s; }
+body.fx-tab-enter .kpi-card:nth-child(4) { animation-delay: .22s; }
+
+/* Auto-refresh: soft fade-in instead of a hard content swap */
+body.fx-refresh-enter [data-testid="stMainBlockContainer"] {
+  animation: soft-in 0.4s ease-out both;
+}
+
+/* ── Refresh countdown (top hairline, restarts on every rerun) ── */
+#cd-timer {
+  position: fixed; top: 0; left: 0; right: 0; height: 3px;
+  z-index: 99998; pointer-events: none;
+}
+#cd-timer .cd-fill {
+  height: 100%; width: 100%;
+  background: linear-gradient(90deg, #7B00FF, #BF5FFF, #FF4DFF);
+  box-shadow: 0 0 12px rgba(191,95,255,0.55);
+  transform-origin: left center;
+}
+@keyframes cd-shrink { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+
+/* ── KPI sparklines + count-up flash ── */
+.kpi-spark { margin-top: 0.65rem; height: 30px; width: 100%; opacity: 0.92; }
+.kpi-spark svg { width: 100%; height: 100%; display: block; }
+.kpi-spark .spark-area { fill: var(--accent); opacity: 0.10; }
+.kpi-spark .spark-line { fill: none; stroke: var(--accent); stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
+.kpi-spark .spark-dot { fill: #ffffff; stroke: var(--accent); stroke-width: 2; }
+@keyframes kpi-flash {
+  0%   { text-shadow: 0 0 0 var(--accent); }
+  50%  { text-shadow: 0 0 26px var(--accent); }
+  100% { text-shadow: 0 0 0 var(--accent); }
+}
+.kpi-value.counting { animation: kpi-flash 0.9s ease-out; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -1000,38 +1093,15 @@ if _show_boot:
     """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
-#  VIDEO BACKGROUND — real black hole footage
-#  Served by a tiny local HTTP thread (not base64-embedded),
-#  so the browser streams it directly with zero impact on the
-#  Streamlit websocket or the FastAPI metrics API.
+#  3D SPLINE BACKGROUND
+#  The full-screen scene is injected as a <spline-viewer> element by the
+#  script below. Spline's runtime loads from the unpkg CDN, so nothing is
+#  bundled or served locally by the dashboard (no static HTTP thread).
 # ─────────────────────────────────────────────
 
-@st.cache_resource(show_spinner=False)
-def _start_static_server():
-    import http.server
-    import socketserver
-    import threading
-
-    class QuietHandler(http.server.SimpleHTTPRequestHandler):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, directory=_STATIC_DIR, **kwargs)
-        def log_message(self, *args, **kwargs):
-            pass  # keep the terminal clean
-
-    httpd = socketserver.ThreadingTCPServer(("127.0.0.1", 0), QuietHandler)
-    httpd.daemon_threads = True
-    port = httpd.server_address[1]
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    return port
-
-_static_port = _start_static_server()
-_video_url = f"http://127.0.0.1:{_static_port}/black-hole-sun-moewalls-com.mp4"
-
-# ── Manual device-type overrides by IP (edit to tag your devices) ─
-_DEVICE_TYPE_OVERRIDES = {
-    "192.168.1.15": "Smart TV",
-    "192.168.1.14": "Intel PC",
-}
+# ── Device types come from the collector's fingerprints only.
+# (A previous hardcoded per-IP override map here was stale and produced
+#  wrong device labels, so it has been removed.)
 
 # ── Icon mapping for topology nodes ──────────────────────────────
 _DEVICE_ICON_FILES = {
@@ -1090,22 +1160,30 @@ if not st.session_state.get("bg_video_injected", False):
 
       body.style.background = '#08070f';
 
-      if (doc.getElementById('bh-video-bg')) return;
+      if (doc.getElementById('spline-bg')) return;
 
+      // Load the Spline viewer runtime once (type=module, unpkg CDN).
+      if (!doc.querySelector('script[data-spline-runtime]')) {{
+        const rt = doc.createElement('script');
+        rt.type = 'module';
+        rt.dataset.splineRuntime = '';
+        rt.src = 'https://unpkg.com/@splinetool/viewer@1.9.82/build/spline-viewer.js';
+        doc.head.appendChild(rt);
+      }}
+
+      // Scrim keeps the dashboard readable over the 3D scene.
       const scrim = doc.createElement('div');
-      scrim.id = 'bh-video-scrim';
+      scrim.id = 'spline-scrim';
       scrim.style.background =
-        'radial-gradient(ellipse 70% 55% at 50% 42%, rgba(8,7,15,0.12) 0%, rgba(8,7,15,0.68) 58%, rgba(8,7,15,0.92) 100%)';
+        'radial-gradient(ellipse 75% 60% at 50% 42%, rgba(8,7,15,0.10) 0%, rgba(8,7,15,0.55) 60%, rgba(8,7,15,0.90) 100%)';
       body.prepend(scrim);
 
-      const video = doc.createElement('video');
-      video.id = 'bh-video-bg';
-      video.src = '{_video_url}';
-      video.autoplay = true;
-      video.muted = true;
-      video.loop = true;
-      video.playsInline = true;
-      body.prepend(video);
+      const viewer = doc.createElement('spline-viewer');
+      viewer.id = 'spline-bg';
+      viewer.setAttribute('url', 'https://prod.spline.design/z3dHhd2lxcTggHEP/scene.splinecode');
+      viewer.setAttribute('loading-anim', 'false');
+      viewer.setAttribute('renderer', 'webgl');
+      body.prepend(viewer);
     }})();
     </script>
     """, height=0)
@@ -1175,9 +1253,12 @@ components.html("""
   }
 
   const handler = function(e){
+    // Support both the old st.tabs (role=tab) and the segmented tab bar
     const tab = e.target.closest('[role="tab"]');
-    if (!tab) return;
-    if (tab.getAttribute('aria-selected') === 'true') return; // already active, no-op
+    const seg = e.target.closest('[data-testid="stSegmentedControl"] button');
+    if (!tab && !seg) return;
+    if (tab && tab.getAttribute('aria-selected') === 'true') return; // already active, no-op
+    if (seg && seg.getAttribute('aria-checked') === 'true') return;
     spawnStar(0, true);
     spawnStar(90, false);
     spawnStar(220, false);
@@ -1215,11 +1296,34 @@ def is_private_ip(ip):
             (parts[0] == "172" and 16 <= int(parts[1]) <= 31))
 
 def build_network_topology(metrics, devices=None):
-    """Build live topology from metrics.
-    Includes ALL hosts from recent metrics — does NOT require them
-    to be in the devices list (catches recently pinged hosts even if
-    the collector hasn't fully discovered them yet).
+    """Build LIVE topology from metrics.
+
+    Only hosts with a metric inside LIVE_WINDOW_SECONDS are shown. The
+    collector no longer fabricates data for offline hosts, so a recent metric
+    means the device actually answered a ping — offline devices drop out here
+    instead of lingering in the graph.
     Devices list is used only for enrichment (vendor, hostname, device_type)."""
+    LIVE_WINDOW_SECONDS = 120
+
+    def _parse_ts(v):
+        try:
+            return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    # Most recent timestamp per host, then a cutoff = newest - live window.
+    host_newest = {}
+    for m in metrics:
+        ts = _parse_ts(m.get("ts"))
+        if ts is None:
+            continue
+        h = m.get("host", "")
+        if h and (h not in host_newest or ts > host_newest[h]):
+            host_newest[h] = ts
+    cutoff = None
+    if host_newest:
+        cutoff = max(host_newest.values()) - timedelta(seconds=LIVE_WINDOW_SECONDS)
+
     if not metrics:
         return {"nodes": [], "links": []}
 
@@ -1234,6 +1338,8 @@ def build_network_topology(metrics, devices=None):
         host = m.get("host", "")
         if not host:
             continue
+        if cutoff is not None and host_newest.get(host, cutoff) < cutoff:
+            continue  # no recent data → host is not live right now
         host_count[host] = host_count.get(host, 0) + 1
         if host in seen:
             continue
@@ -1242,7 +1348,7 @@ def build_network_topology(metrics, devices=None):
         is_ip = len(ip_parts) == 4 and all(p.isdigit() for p in ip_parts)
 
         dev_info = device_lookup.get(host, {})
-        dtype = _DEVICE_TYPE_OVERRIDES.get(host) or dev_info.get("device_type") or "Unknown"
+        dtype = dev_info.get("device_type") or "Unknown"
 
         host_data = [x for x in metrics if x.get("host") == host]
         avg_lat = sum(x.get("latency", 0) or 0 for x in host_data) / len(host_data)
@@ -1306,20 +1412,6 @@ def build_network_topology(metrics, devices=None):
 
     return {"nodes": nodes, "links": links}
 
-_raw_topology = fetch_topology()
-_metrics_topo = build_network_topology(metrics_data, devices_data)
-
-if _raw_topology and _raw_topology.get("nodes") and _metrics_topo.get("links"):
-    _api_nodes_by_id = {n["id"]: n for n in _raw_topology["nodes"]}
-    merged_nodes = []
-    for n in _metrics_topo["nodes"]:
-        api_node = _api_nodes_by_id.get(n["id"], {})
-        merged = {**n, **{k: v for k, v in api_node.items() if v and v != "Unknown"}}
-        merged_nodes.append(merged)
-    topology_data = {"nodes": merged_nodes, "links": _metrics_topo["links"]}
-else:
-    topology_data = _metrics_topo
-
 # ─────────────────────────────────────────────
 #  STATUS (minimal, no header/entry text)
 # ─────────────────────────────────────────────
@@ -1371,28 +1463,68 @@ anom_pct   = (anom_count / len(df)) * 100
 
 # ─────────────────────────────────────────────
 #  KPI CARDS
+#  Stat-tile contract: label · value · unit · trend. The trend is a tiny
+#  sparkline of the last N samples (dataviz reference — de-emphasis hue on
+#  the track, accent current value). Values count up via the motion-manager
+#  JS below (data-count-to / data-decimals).
 # ─────────────────────────────────────────────
+def _num(v):
+    try:
+        return v if v == v else 0.0
+    except Exception:
+        return 0.0
+
+def _spark(series, w=120, h=30):
+    series = [_num(v) for v in series]
+    if len(series) < 2:
+        return ""
+    mn, mx = min(series), max(series)
+    rng = (mx - mn) or 1.0
+    n = len(series)
+    pts = []
+    for i, v in enumerate(series):
+        x = w * i / (n - 1)
+        y = h - 4 - (h - 8) * (v - mn) / rng
+        pts.append(f"{x:.1f},{y:.1f}")
+    poly = " ".join(pts)
+    cx, cy = pts[-1].split(",")
+    return (f'<svg viewBox="0 0 {w} {h}" preserveAspectRatio="none">'
+            f'<polyline class="spark-area" points="0,{h} {poly} {w},{h}"/>'
+            f'<polyline class="spark-line" points="{poly}"/>'
+            f'<circle class="spark-dot" cx="{cx}" cy="{cy}" r="2.5"/></svg>')
+
+_trend = df.sort_values("ts")
+_lat_spark  = _spark(_trend["latency"].tail(14).tolist())
+_traf_spark = _spark(_trend["traffic"].tail(14).tolist())
+_err_spark  = _spark(_trend["error_rate"].tail(14).tolist())
+_anom_spark = _spark(_trend["is_anomaly"].astype(float).tail(14).tolist())
+_avg_lat_v, _avg_traf_v, _avg_err_v = _num(avg_lat), _num(avg_traf), _num(avg_err)
+
 st.markdown(f"""
 <div class='kpi-grid'>
   <div class='kpi-card c1'>
     <div class='kpi-label'>Avg Latency</div>
-    <div class='kpi-value'>{avg_lat:.1f}</div>
+    <div class='kpi-value' id='kpi-lat' data-count-to='{_avg_lat_v:.1f}' data-decimals='1'>0</div>
     <div class='kpi-unit'>milliseconds</div>
+    <div class='kpi-spark'>{_lat_spark}</div>
   </div>
   <div class='kpi-card c2'>
     <div class='kpi-label'>Avg Traffic</div>
-    <div class='kpi-value'>{avg_traf:.1f}</div>
+    <div class='kpi-value' id='kpi-traf' data-count-to='{_avg_traf_v:.1f}' data-decimals='1'>0</div>
     <div class='kpi-unit'>Mbps</div>
+    <div class='kpi-spark'>{_traf_spark}</div>
   </div>
   <div class='kpi-card c3'>
     <div class='kpi-label'>Avg Error Rate</div>
-    <div class='kpi-value'>{avg_err:.2f}</div>
+    <div class='kpi-value' id='kpi-err' data-count-to='{_avg_err_v:.2f}' data-decimals='2'>0</div>
     <div class='kpi-unit'>percent</div>
+    <div class='kpi-spark'>{_err_spark}</div>
   </div>
   <div class='kpi-card c4'>
     <div class='kpi-label'>Anomalies</div>
-    <div class='kpi-value'>{anom_count}</div>
+    <div class='kpi-value' id='kpi-anom' data-count-to='{anom_count}' data-decimals='0'>0</div>
     <div class='kpi-unit'>{anom_pct:.1f}% of {len(df)} samples</div>
+    <div class='kpi-spark'>{_anom_spark}</div>
   </div>
 </div>""", unsafe_allow_html=True)
 
@@ -1414,7 +1546,13 @@ BASE_LAYOUT = dict(
 GRID_X = dict(gridcolor="rgba(123,0,255,0.15)", showgrid=True, zeroline=False, color="rgba(191,95,255,0.4)")
 GRID_Y = dict(gridcolor="rgba(123,0,255,0.15)", showgrid=True, zeroline=False, color="rgba(191,95,255,0.4)")
 
-HOST_COLORS = {"R1": "#BF5FFF", "SW1": "#7B00FF", "WEB_SERVER": "#FF4DFF"}
+# Fixed categorical palette (violet-themed, CVD-safe adjacent order). Each
+# host is assigned a stable slot by name, so color follows the entity and a
+# host keeps its hue across reruns/refreshes — never re-colored by rank.
+_HOST_PALETTE = ["#BF5FFF", "#00B8D4", "#FF9E40", "#FF5C8A", "#5CA8FF", "#F4E04D", "#7B00FF", "#3DDC97"]
+HOST_COLORS = {}
+for _h in sorted({str(h) for h in df["host"].unique()}):
+    HOST_COLORS.setdefault(_h, _HOST_PALETTE[len(HOST_COLORS) % len(_HOST_PALETTE)])
 
 def styled_line(metric, title, unit):
     fig = go.Figure()
@@ -1444,12 +1582,112 @@ def styled_line(metric, title, unit):
     return fig
 
 # ─────────────────────────────────────────────
-#  TABS
+#  TABS — persistent segmented bar. Unlike st.tabs, the selection lives in a
+#  real keyed widget, so st.rerun() no longer resets the user to Overview.
 # ─────────────────────────────────────────────
-tab1, tab2, tab3, tab4 = st.tabs(["⬛  Overview", "⚠  Alerts", "📈  Charts", "🌐  Network Topology"])
+_TABS = ["⬛  Overview", "⚠  Alerts", "📈  Charts", "🌐  Network Topology"]
+active_tab = st.segmented_control(
+    "Navigation",
+    options=_TABS,
+    default=_TABS[0],
+    key="main_tab",
+    label_visibility="collapsed",
+)
+
+# ── Motion FX ─────────────────────────────────────────────
+# Play a full-screen transition sweep when switching tabs (masks Streamlit's
+# bare loading flash) and a different "data syncing" animation on auto-refresh.
+# The CSS classes are defined in the main <style> block above.
+_prev_tab = st.session_state.get("_fx_prev_tab")
+_tab_changed = _prev_tab is not None and _prev_tab != active_tab
+st.session_state["_fx_prev_tab"] = active_tab
+
+# Auto-refresh detection from the autorefresh tick (accurate at any interval).
+_ar_tick = st.session_state.get("_ar_tick", 0)
+_ar_prev = st.session_state.get("_ar_prev_tick", -1)
+_auto_refresh_fx = (not _tab_changed) and _ar_prev >= 0 and _ar_tick > _ar_prev
+
+# Always-injected motion manager (runs on every rerun):
+#  • staggered fade-up entrance on tab switch (body.fx-tab-enter)
+#  • soft fade-in on auto-refresh — masks Streamlit's bare loading swap
+#    instead of flashing a skeleton (dataviz: "hold the frame on refetch")
+#  • the refresh countdown hairline, restarted on each rerun
+#  • KPI values count up from the previous render's value (0 on first load)
+#  • the full-screen tab / refresh overlay FX
+_fx_main = "fx-tab-overlay" if _tab_changed else "fx-refresh-ring"
+_fx_extra = "fx-scanline" if _tab_changed else "fx-dataflow"
+components.html(
+    f"""
+    <script>
+    (function(){{
+      const doc = window.parent.document;
+      const body = doc.body;
+
+      // ── entrance classes ──
+      body.classList.remove('fx-tab-enter');
+      body.classList.remove('fx-refresh-enter');
+      if ({str(_tab_changed).lower()}) body.classList.add('fx-tab-enter');
+      if ({str(_auto_refresh_fx).lower()}) body.classList.add('fx-refresh-enter');
+      setTimeout(function(){{
+        body.classList.remove('fx-tab-enter');
+        body.classList.remove('fx-refresh-enter');
+      }}, 1100);
+
+      // ── overlay fx (tab switch / auto-refresh) ──
+      if ({str(_tab_changed or _auto_refresh_fx).lower()}) {{
+        doc.querySelectorAll('.fx-tab-overlay,.fx-scanline,.fx-refresh-ring,.fx-dataflow')
+           .forEach(n => n.remove());
+        ['{_fx_main}','{_fx_extra}'].forEach(cls => {{
+          const el = doc.createElement('div');
+          el.className = cls;
+          doc.body.appendChild(el);
+          setTimeout(() => el.remove(), 3000);
+        }});
+      }}
+
+      // ── refresh countdown hairline (restarts on every rerun) ──
+      if ({str(HAS_AUTOREFRESH).lower()}) {{
+        const iv = {int(st.session_state.refresh_interval)};
+        let cd = doc.getElementById('cd-timer');
+        if (!cd) {{
+          cd = doc.createElement('div'); cd.id = 'cd-timer';
+          const bar = doc.createElement('div'); bar.className = 'cd-fill';
+          cd.appendChild(bar); body.appendChild(cd);
+        }}
+        const fill = cd.querySelector('.cd-fill');
+        fill.style.animation = 'none';
+        void fill.offsetWidth;                       // restart the animation
+        fill.style.animation = 'cd-shrink ' + iv + 's linear forwards';
+      }}
+
+      // ── KPI count-up (from the previous render's value; 0 on first load) ──
+      const prev = window.__kpiPrev || {{}};
+      doc.querySelectorAll('.kpi-value[data-count-to]').forEach(el => {{
+        const target = parseFloat(el.getAttribute('data-count-to'));
+        if (isNaN(target)) return;
+        const dec = parseInt(el.getAttribute('data-decimals') || '1', 10);
+        const from = (prev[el.id] !== undefined) ? prev[el.id] : 0;
+        prev[el.id] = target;
+        el.classList.add('counting');
+        const t0 = performance.now(), dur = 900;
+        (function tick(now){{
+          const p = Math.min((now - t0) / dur, 1);
+          const e = 1 - Math.pow(1 - p, 3);
+          const v = from + (target - from) * e;
+          el.textContent = dec === 0 ? Math.round(v).toString() : v.toFixed(dec);
+          if (p < 1) requestAnimationFrame(tick);
+        }})(performance.now());
+        setTimeout(() => el.classList.remove('counting'), 1000);
+      }});
+      window.__kpiPrev = prev;
+    }})();
+    </script>
+    """,
+    height=0,
+)
 
 # ── TAB 1 ─────────────────────────────────────
-with tab1:
+if active_tab == _TABS[0]:
     cl, cr = st.columns([1.1, 0.9], gap="large")
 
     with cl:
@@ -1480,11 +1718,20 @@ with tab1:
         st.markdown("<div class='sec-head'>// Anomaly Distribution</div>", unsafe_allow_html=True)
         if anom_count > 0:
             ph = df.groupby("host")["is_anomaly"].sum().reset_index()
-            ph = ph[ph["is_anomaly"] > 0]
+            ph = ph[ph["is_anomaly"] > 0].sort_values("is_anomaly", ascending=False)
+            # Part-to-whole cap (≤6 slices): fold the tail into "Other".
+            if len(ph) > 6:
+                top = ph.head(5)
+                other = int(ph["is_anomaly"].iloc[5:].sum())
+                ph = pd.concat(
+                    [top, pd.DataFrame([{"host": "Other", "is_anomaly": other}])],
+                    ignore_index=True,
+                )
+            pie_colors = [_HOST_PALETTE[i % len(_HOST_PALETTE)] for i in range(len(ph))]
             fig_pie = go.Figure(go.Pie(
                 labels=ph["host"], values=ph["is_anomaly"], hole=0.6,
-                marker=dict(colors=["#BF5FFF","#7B00FF","#FF4DFF"],
-                            line=dict(color="#000000", width=2)),
+                marker=dict(colors=pie_colors,
+                            line=dict(color="#080716", width=2)),
                 textfont=dict(family="Share Tech Mono", color="#E0D7FF", size=11),
             ))
             fig_pie.update_layout(
@@ -1507,7 +1754,7 @@ with tab1:
             </div>""", unsafe_allow_html=True)
 
 # ── TAB 2 ─────────────────────────────────────
-with tab2:
+elif active_tab == _TABS[1]:
     st.markdown("<div class='sec-head'>// Active Alerts</div>", unsafe_allow_html=True)
     adf = pd.DataFrame(alerts_data) if alerts_data else pd.DataFrame()
     if not adf.empty:
@@ -1576,9 +1823,13 @@ with tab2:
     </script>
     """, height=0)
 
-    active_cat = st.session_state.get("alert_active_cat", None)
-    clicked_key = None
+    # Client-side alert filtering: the severity cards and every alert row are
+    # pure HTML and a tiny JS handler toggles visibility. NO st.rerun — so
+    # clicking a card never kicks the user back to the Overview tab.
     CARDS_PER_ROW = 4
+
+    def _cat_id(reason):
+        return re.sub(r'[^a-zA-Z0-9]+', '_', str(reason))[:40]
 
     for row_start in range(0, len(reasons), CARDS_PER_ROW):
         row_reasons = reasons[row_start:row_start + CARDS_PER_ROW]
@@ -1587,71 +1838,71 @@ with tab2:
             kind = _classify(reason)
             m = SEV_META[kind]
             n = int(reason_counts.get(reason, 0))
-            safe_key = re.sub(r'[^a-zA-Z0-9]+', '_', reason)[:40]
             with col:
-                active_cls = "active" if active_cat == reason else ""
                 card_html = f"""
-                <div class='sev-card {active_cls}' style='--accent:{m["color"]};--glow:{m["bg"].replace("0.16","0.4")}'>
+                <div class='sev-card' data-cat='{_cat_id(reason)}' style='cursor:pointer;--accent:{m["color"]};--glow:{m["bg"].replace("0.16","0.4")}'>
                     <div class='sev-card-icon'>{m["icon"]}</div>
                     <div class='sev-card-count'>{n}</div>
                     <div class='sev-card-title'>{m["icon"]} {reason}</div>
                 </div>
                 """
                 st.markdown(re.sub(r'\n\s*', '', card_html), unsafe_allow_html=True)
-                if st.button(reason, key=f"card_{safe_key}"):
-                    clicked_key = reason
 
-    if clicked_key is not None:
-        st.session_state.alert_active_cat = None if active_cat == clicked_key else clicked_key
-        st.rerun()
-
-    if active_cat is not None:
-        st.markdown("<div class='reset-filter-marker'></div>", unsafe_allow_html=True)
-        if st.button("← Réduire", key="card_reset"):
-            st.session_state.alert_active_cat = None
-            st.rerun()
-
-        prev_cat = st.session_state.get("alert_cat_prev")
-        do_swipe = prev_cat != active_cat
-        st.session_state.alert_cat_prev = active_cat
-        panel_cls = "sev-panel-wrap swipe" if do_swipe else "sev-panel-wrap"
-
-        def render_group_html(df_group, meta, title, cap=30):
-            rows_html = []
-            for _, r in df_group.head(cap).iterrows():
-                ts_str = r.ts.strftime('%H:%M:%S') if "ts" in df_group.columns else "—"
-                rows_html.append(f"""
-                <div class='alert-row' style='--accent:{meta["color"]}'>
-                    <span class='a-icon' style='background:{meta["bg"]};color:{meta["color"]};border:1px solid {meta["border"]};'>{meta["icon"]}</span>
-                    <span class='a-host'>{r.host}</span>
-                    <span class='a-reason'>{r.reason}</span>
-                    <span class='a-time'>{ts_str}</span>
-                </div>""")
-            if not rows_html:
-                rows_html.append("""
-                <div style='text-align:center;padding:1.5rem;color:rgba(191,95,255,0.45);
-                            font-family:Share Tech Mono,monospace;font-size:0.8rem;'>
-                    ✓ No alerts for this category
-                </div>""")
-            html = f"""
-            <div class='sev-group-head' style='color:{meta["color"]}'>
-                <span>{meta["icon"]} {title}</span><span class='sev-count'>{len(df_group)}</span>
+    # One combined alert list; each row carries its category id for the filter.
+    if not adf.empty:
+        rows_html = []
+        cap = 60
+        for _, r in adf.head(cap).iterrows():
+            meta = SEV_META[_classify(r.reason)]
+            ts_str = r.ts.strftime('%H:%M:%S') if "ts" in adf.columns else "—"
+            rows_html.append(f"""
+            <div class='alert-row' data-cat='{_cat_id(r.reason)}' style='--accent:{meta["color"]}'>
+                <span class='a-icon' style='background:{meta["bg"]};color:{meta["color"]};border:1px solid {meta["border"]};'>{meta["icon"]}</span>
+                <span class='a-host'>{r.host}</span>
+                <span class='a-reason'>{r.reason}</span>
+                <span class='a-time'>{ts_str}</span>
+            </div>""")
+        if len(adf) > cap:
+            rows_html.append(f"<div class='alert-more'>+{len(adf) - cap} more</div>")
+        list_html = f"""
+        <div class='alert-panel' id='alert-list'>
+            <div class='sev-group-head' style='color:#BF5FFF'>
+                <span>⚠ All alerts</span><span class='sev-count'>{len(adf)}</span>
             </div>
-            <div class='alert-panel'>{''.join(rows_html)}</div>
-            """
-            if len(df_group) > cap:
-                html += f"<div class='alert-more'>+{len(df_group) - cap} more</div>"
-            return html
+            {''.join(rows_html)}
+        </div>
+        """
+        st.markdown(re.sub(r'\n\s*', '', list_html), unsafe_allow_html=True)
 
-        grp = adf[adf["reason"] == active_cat] if not adf.empty else pd.DataFrame()
-        meta = SEV_META[_classify(active_cat)]
-        panel_inner = render_group_html(grp, meta, active_cat, cap=30)
-
-        final_html = f"<div class='{panel_cls}'>{panel_inner}</div>"
-        final_html = re.sub(r'\n\s*', '', final_html)
-        st.markdown(final_html, unsafe_allow_html=True)
-    else:
-        st.session_state.alert_cat_prev = None
+        components.html("""
+        <script>
+        (function(){
+          const doc = window.parent.document;
+          if (doc.__alertFilterHandler) {
+            doc.removeEventListener('click', doc.__alertFilterHandler, true);
+          }
+          const handler = function(e){
+            const card = e.target.closest('.sev-card');
+            if (!card) return;
+            const cat = card.getAttribute('data-cat');
+            if (!cat) return;
+            const cards = doc.querySelectorAll('.sev-card');
+            const rows  = doc.querySelectorAll('.alert-row');
+            const wasActive = card.classList.contains('active');
+            cards.forEach(c => c.classList.remove('active'));
+            const showAll = wasActive;   // clicking the active card again = reset
+            if (!showAll) card.classList.add('active');
+            rows.forEach(r => {
+              r.style.display = (showAll || r.getAttribute('data-cat') === cat) ? '' : 'none';
+            });
+            const list = doc.getElementById('alert-list');
+            if (list) list.scrollIntoView({behavior:'smooth', block:'start'});
+          };
+          doc.__alertFilterHandler = handler;
+          doc.addEventListener('click', handler, true);
+        })();
+        </script>
+        """, height=0)
 
     if not adf.empty:
         st.markdown("<div class='sec-head' style='margin-top:1.5rem;'>// Alert Reasons</div>", unsafe_allow_html=True)
@@ -1659,11 +1910,10 @@ with tab2:
         rc.columns = ["reason","count"]
         fig_bar = go.Figure(go.Bar(
             x=rc["count"], y=rc["reason"], orientation="h",
-            marker=dict(
-                color=rc["count"],
-                colorscale=[[0,"#3C0078"],[0.5,"#7B00FF"],[1,"#FF4DFF"]],
-                line=dict(color="rgba(0,0,0,0)")
-            ),
+            # Single-hue bars: alert reasons are nominal categories, so a
+            # value-ramp on the fill would double-encode what bar length
+            # already shows (dataviz anti-pattern fix).
+            marker=dict(color="#7B00FF", line=dict(color="rgba(0,0,0,0)")),
             text=rc["count"], textposition="outside",
             textfont=dict(color="#E0D7FF", family="Share Tech Mono"),
         ))
@@ -1684,7 +1934,7 @@ with tab2:
         </div>""", unsafe_allow_html=True)
 
 # ── TAB 3 ─────────────────────────────────────
-with tab3:
+elif active_tab == _TABS[2]:
     st.markdown("<div class='sec-head'>// Latency &amp; Error Rate</div>", unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     with c1:
@@ -1698,10 +1948,9 @@ with tab3:
 # ============================================================
 # TAB 4 - NETWORK TOPOLOGY WITH PING ANIMATION
 # ============================================================
-with tab4:
+elif active_tab == _TABS[3]:
     """Enhanced Network Topology Tab with Animated Ping Effects"""
     import math as _math
-    import time as _time
 
     st.markdown("<div class='sec-head'>// Network Topology — Live & Interactive</div>",
                 unsafe_allow_html=True)
@@ -1715,15 +1964,26 @@ with tab4:
         st.session_state.ping_target = None
     if "ping_result_data" not in st.session_state:
         st.session_state.ping_result_data = None
-    if "ping_start_time" not in st.session_state:
-        st.session_state.ping_start_time = None
 
     # Fetch fresh data (force_http to bypass WebSocket cache — need complete set, not latest 10)
     topo_metrics_data = fetch_metrics(st.session_state.data_limit, force_http=True)
 
-    # ── Check for phone hotspot ──
+    # ── Build topology first so a hotspot can also be detected locally ──
+    topo_devices = fetch_devices()
+    final_topo = build_network_topology(topo_metrics_data, topo_devices)
+
+    # ── Check for phone hotspot: trust the API flag AND check node IPs directly.
+    #    On an AP-isolated hotspot only the host machine is reachable, so the
+    #    machine's own IP being on a hotspot subnet is decisive — this is what
+    #    makes the topology tab show the hotspot message instead of an error. ──
+    _HOTSPOT_PREFIXES = ("192.168.42.", "192.168.43.", "192.168.44.", "172.20.10.")
     topo_api_resp = fetch_topology()
-    hotspot_detected = topo_api_resp and topo_api_resp.get("hotspot_detected", False)
+    api_hotspot = bool(topo_api_resp and topo_api_resp.get("hotspot_detected", False))
+    local_hotspot = any(
+        n.get("is_ip") and n.get("ip", "").startswith(_HOTSPOT_PREFIXES)
+        for n in final_topo["nodes"]
+    )
+    hotspot_detected = api_hotspot or local_hotspot
 
     if hotspot_detected:
         st.markdown("""
@@ -1741,11 +2001,6 @@ with tab4:
         </div>""", unsafe_allow_html=True)
         st.stop()
 
-    # ============================================================
-    # BUILD TOPOLOGY FROM METRICS (uses unified builder)
-    # ============================================================
-    topo_devices = fetch_devices()
-    final_topo = build_network_topology(topo_metrics_data, topo_devices)
     nodes_list = final_topo["nodes"]
     links_list = final_topo["links"]
 
@@ -1767,6 +2022,7 @@ with tab4:
             "PC":      {"icon": "💻", "color": "#9C27B0", "symbol": "circle",  "size": 26},
             "Printer": {"icon": "🖨️", "color": "#8BC34A", "symbol": "square",  "size": 26},
             "TV":      {"icon": "📺", "color": "#E91E63", "symbol": "diamond", "size": 28},
+            "Cloud":   {"icon": "☁️", "color": "#90CAF9", "symbol": "circle",  "size": 30},
             "Unknown": {"icon": "📡", "color": "#4CAF50", "symbol": "circle",  "size": 24}
         }
 
@@ -1959,106 +2215,22 @@ with tab4:
                                 on_select="rerun", key="topo_visual")
 
         # ============================================================
-        # CLICK-TO-PING WITH ANIMATION
+        # CLICK-TO-PING — the ping runs synchronously in THIS run inside a
+        # spinner. (The old 1.5s sleep+rerun animation loop caused ~15 full
+        # page reruns per ping and made the app feel heavy/slow.)
         # ============================================================
+        clicked_target = None
         if event and event.get("selection", {}).get("points"):
             pt = event["selection"]["points"][0]
-            if "customdata" in pt and pt["customdata"]:
+            if pt.get("customdata"):
                 clicked_target = pt["customdata"]
-                # Set session state to trigger ping
-                st.session_state.ping_target = clicked_target
-                st.session_state.ping_in_progress = True
-                st.session_state.ping_result_data = None
-                st.session_state.ping_start_time = _time.time()
-                st.rerun()
 
-        # ============================================================
-        # PING ANIMATION + RESULT
-        # ============================================================
-        if st.session_state.ping_in_progress and st.session_state.ping_target:
-            target = st.session_state.ping_target
-
-            # Check if we have a result yet
-            if st.session_state.ping_result_data is None:
-                elapsed = _time.time() - (st.session_state.ping_start_time or 0)
-
-                if elapsed < 1.5:  # Show animation for 1.5 seconds
-                    # ANIMATION PHASE - show radar effect
-                    progress = min(elapsed / 1.5, 1.0)  # 0 to 1
-
-                    st.markdown(f"""
-                    <div style='
-                        text-align:center;
-                        padding:2rem;
-                        background:rgba(191,95,255,0.05);
-                        border:2px solid #BF5FFF;
-                        border-radius:12px;
-                        margin:1rem 0;
-                        position:relative;
-                        overflow:hidden;
-                    '>
-                        <div style='
-                            font-size:1.3rem;
-                            color:#BF5FFF;
-                            font-family:Orbitron,sans-serif;
-                            margin-bottom:0.5rem;
-                        '>
-                            📡 Pinging {target}...
-                        </div>
-                        <div style='
-                            position:relative;
-                            width:100%;
-                            height:80px;
-                            display:flex;
-                            align-items:center;
-                            justify-content:center;
-                        '>
-                            <div style='
-                                position:absolute;
-                                width:{40 + progress * 200}px;
-                                height:{40 + progress * 200}px;
-                                border:2px solid rgba(191,95,255,{0.8 - progress * 0.8});
-                                border-radius:50%;
-                                animation:radar 1.5s ease-out;
-                            '></div>
-                            <div style='
-                                position:absolute;
-                                width:30px;
-                                height:30px;
-                                background:radial-gradient(circle, #BF5FFF 0%, transparent 70%);
-                                border-radius:50%;
-                                animation:pulse-core 0.8s ease-in-out infinite;
-                            '></div>
-                        </div>
-                        <div style='
-                            color:rgba(191,95,255,0.7);
-                            font-size:0.85rem;
-                            font-family:Share Tech Mono,monospace;
-                            margin-top:0.5rem;
-                        '>
-                            Transmitting ICMP packet... ({int(progress*100)}%)
-                        </div>
-                    </div>
-                    <style>
-                    @keyframes radar {{
-                        0% {{ transform: scale(0.3); opacity: 1; }}
-                        100% {{ transform: scale(2); opacity: 0; }}
-                    }}
-                    @keyframes pulse-core {{
-                        0%, 100% {{ transform: scale(1); opacity: 1; }}
-                        50% {{ transform: scale(1.3); opacity: 0.7; }}
-                    }}
-                    </style>
-                    """, unsafe_allow_html=True)
-
-                    _time.sleep(0.1)
-                    st.rerun()
-                else:
-                    # Time to do the actual ping
-                    result = ping_host(target)
-                    st.session_state.ping_result_data = result
-                    st.session_state.ping_in_progress = False
-                    st.rerun()
+        if clicked_target:
+            st.session_state.ping_target = clicked_target
+            with st.spinner(f"📡 Pinging {clicked_target}..."):
+                _ping_result = ping_host(clicked_target)
+            st.session_state.ping_result_data = _ping_result
+            st.session_state.ping_in_progress = False
 
         # Show ping result if we have one
         if (not st.session_state.ping_in_progress and
@@ -2191,11 +2363,11 @@ with tab4:
         if manual_ping:
             target = custom_ip.strip() if custom_ip.strip() else target_sel
             if target:
-                # Use same session state flow
+                with st.spinner(f"📡 Pinging {target}..."):
+                    _ping_result = ping_host(target)
                 st.session_state.ping_target = target
-                st.session_state.ping_in_progress = True
-                st.session_state.ping_result_data = None
-                st.session_state.ping_start_time = _time.time()
+                st.session_state.ping_result_data = _ping_result
+                st.session_state.ping_in_progress = False
                 st.rerun()
 
         # ============================================================

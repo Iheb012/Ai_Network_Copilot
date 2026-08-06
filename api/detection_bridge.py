@@ -7,6 +7,7 @@ import sys
 import os
 import datetime
 import sqlite3
+import time
 
 # Ajouter le dossier detection au chemin
 DOSSIER_PROJET = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -24,13 +25,35 @@ def get_modele():
         _modele = charger_modele()
     return _modele
 
+
+# ── TTL cache ─────────────────────────────────────────────────────────────
+# The API's three WebSocket streams + REST endpoints all call detecter_lot()
+# (a SQLite read + Isolation-Forest predict). Recomputing on every request is
+# what makes the app feel heavy, so we share ONE result per time window.
+_CACHE_TTL_SECONDS = 5.0
+_cache = {}
+
+def _cached(key, producer):
+    now = time.monotonic()
+    entry = _cache.get(key)
+    if entry is not None and now - entry[0] < _CACHE_TTL_SECONDS:
+        return entry[1]
+    value = producer()
+    _cache[key] = (now, value)
+    return value
+
+
 def get_alerts_with_causes(limit: int = 50) -> list:
     """
-    Remplace get_alerts() de database.py
-    Retourne les alertes avec causes réelles identifiées par le ML
+    Remplace get_alerts() de database.py — alertes avec causes ML.
+    Résultat partagé via cache TTL (5s) pour ne pas re-prédire à chaque requête.
     """
+    return _cached(("alerts", limit), lambda: _build_alerts(limit))
+
+
+def _build_alerts(limit):
     resultats = detecter_lot(limit=limit * 3)  # on prend plus pour filtrer
-    
+
     alertes = []
     for r in resultats:
         if r["is_anomaly"]:
@@ -45,19 +68,23 @@ def get_alerts_with_causes(limit: int = 50) -> list:
                 "error_rate"     : r["error_rate"],
                 "traffic"        : r["traffic"]
             })
-            
+
             if len(alertes) >= limit:
                 break
-    
+
     return alertes
 
 def get_metrics_with_detection(limit: int = 100) -> list:
     """
-    Remplace get_latest_metrics() de database.py
-    Retourne les métriques avec détection ML intégrée
+    Remplace get_latest_metrics() de database.py — métriques avec détection ML.
+    Résultat partagé via cache TTL (5s).
     """
+    return _cached(("metrics", limit), lambda: _build_metrics(limit))
+
+
+def _build_metrics(limit):
     resultats = detecter_lot(limit=limit)
-    
+
     metrics = []
     for r in resultats:
         metrics.append({
@@ -72,7 +99,7 @@ def get_metrics_with_detection(limit: int = 100) -> list:
             "conseil"        : r["conseil"],
             "score_confiance": r["score_confiance"]
         })
-    
+
     return metrics
 
 def analyser_metrique_temps_reel(latency, error_rate, traffic) -> dict:

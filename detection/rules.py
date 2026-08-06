@@ -11,58 +11,65 @@ SEUILS = {
 def identifier_cause(latency, error_rate, traffic):
     """
     Identifie la cause probable d'une anomalie
-    selon la combinaison des valeurs mesurées
+    selon la combinaison des valeurs mesurées.
+
+    NOTE (home-LAN reality): the collector measures ping latency only, so
+    error_rate/traffic are almost always 0. The multi-metric causes below are
+    therefore only reachable when those signals actually carry data; otherwise
+    we fall back to latency-based causes instead of "inconnu".
     """
     # Machine inaccessible / câble / interface
     if latency >= SEUILS["timeout"]:
         if traffic == 0 or traffic < 1:
             return "machine_inaccessible_ou_cable"
         return "interface_desactivee"
-    
-    # Panne WAN
-    if latency > 400 and traffic < 10 and error_rate > 50:
-        return "panne_wan"
-    
-    # Défaillance équipement réseau
-    if latency > 200 and error_rate > 50 and traffic < 15:
-        return "defaillance_equipement"
-    
-    # Pare-feu bloquant
-    if error_rate > 40 and latency < 250 and traffic < 50:
-        return "parefeu_bloquant"
-    
-    # Perte de paquets
-    if error_rate > 20 and latency < 200:
-        return "perte_paquets"
-    
-    # Saturation bande passante
-    if traffic >= SEUILS["traffic_sat"] and latency > 100:
-        return "saturation_bande_passante"
-    
-    # Congestion réseau
-    if traffic >= SEUILS["traffic_sat"] and latency > 80:
-        return "congestion"
-    
-    # Problème DNS
-    if latency > 300 and error_rate < 30 and traffic < 50:
-        return "panne_dns"
-    
-    # Problème IP / passerelle
-    if latency > 200 and error_rate > 30 and traffic < 35:
-        return "probleme_ip"
-    
-    # CPU / RAM saturé
-    if latency > 200 and error_rate < 20 and traffic > 20:
-        return "cpu_ram_sature"
-    
+
+    # Multi-metric causes — only when we actually have error/traffic signals
+    if error_rate > 0 or traffic > 0:
+        # Panne WAN
+        if latency > 400 and traffic < 10 and error_rate > 50:
+            return "panne_wan"
+        # Défaillance équipement réseau
+        if latency > 200 and error_rate > 50 and traffic < 15:
+            return "defaillance_equipement"
+        # Pare-feu bloquant
+        if error_rate > 40 and latency < 250 and traffic < 50:
+            return "parefeu_bloquant"
+        # Perte de paquets
+        if error_rate > 20 and latency < 200:
+            return "perte_paquets"
+        # Saturation bande passante
+        if traffic >= SEUILS["traffic_sat"] and latency > 100:
+            return "saturation_bande_passante"
+        # Congestion réseau
+        if traffic >= SEUILS["traffic_sat"] and latency > 80:
+            return "congestion"
+        # Problème DNS / IP / CPU-RAM (only with real error/traffic evidence)
+        if latency > 300 and error_rate < 30 and traffic < 50:
+            return "panne_dns"
+        if latency > 200 and error_rate > 30 and traffic < 35:
+            return "probleme_ip"
+        if latency > 200 and error_rate < 20 and traffic > 20:
+            return "cpu_ram_sature"
+
+    # High latency with NO packet loss → weak Wi-Fi signal / interference.
+    # Far more likely for wireless clients than a DNS fault.
+    if latency > 300 and error_rate < 5:
+        return "signal_wifi_faible"
+
     # Latence élevée seule
     if latency > SEUILS["latency"]:
         return "latence_elevee"
-    
+
     # Erreurs élevées seules
     if error_rate > SEUILS["error_rate"]:
         return "erreurs_elevees"
-    
+
+    # ML-only anomaly (no rule threshold crossed) → relative spike from the
+    # device's own baseline that the rules missed.
+    if latency > 0:
+        return "latence_anormale"
+
     return "inconnu"
 
 # Description lisible de chaque cause
@@ -80,6 +87,8 @@ DESCRIPTIONS_CAUSES = {
     "cpu_ram_sature"                : "Forte utilisation CPU/RAM sur le serveur",
     "latence_elevee"                : "Latence réseau élevée",
     "erreurs_elevees"               : "Taux d'erreurs réseau élevé",
+    "signal_wifi_faible"            : "Signal Wi-Fi faible ou interférences",
+    "latence_anormale"              : "Latence anormale par rapport à la normale",
     "inconnu"                       : "Cause indéterminée",
 }
 
@@ -98,6 +107,8 @@ CONSEILS_CAUSES = {
     "cpu_ram_sature"                : "tasklist (Windows) ou top (Linux) + redémarrer service",
     "latence_elevee"                : "ping + tracert + pathping",
     "erreurs_elevees"               : "ping -n 100 + vérifier câbles et équipements",
+    "signal_wifi_faible"            : "Rapprocher l'appareil du routeur / changer de canal Wi-Fi / vérifier le signal",
+    "latence_anormale"              : "Comparer avec la latence habituelle + vérifier le Wi-Fi ou l'activité de l'appareil",
     "inconnu"                       : "ping + tracert + ipconfig /all",
 }
 

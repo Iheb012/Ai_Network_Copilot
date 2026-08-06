@@ -37,9 +37,20 @@ from detection.rules import SEUILS, detecter_anomalie_seuils_adaptatifs
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'api'))
 from database import creer_base_de_donnees
 
-# Try to import scapy for ARP scanning; if not available, fallback to file-based hosts
+# Try to import scapy for ARP scanning; if not available, fallback to file-based hosts.
+# NOTE: scapy is only used for OPTIONAL Linux/Mac ARP scans and traceroute — the
+# Windows discovery path (discover_local_devices_win) is 100% subprocess-based.
+# Import it quietly: on machines without Npcap it logs a scary "pcap service is
+# not running" warning at import time, which is irrelevant to the collector.
 try:
-    from scapy.all import ARP, Ether, srp, conf, sr1, IP, ICMP, TCP
+    with open(os.devnull, "w") as _devnull, warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        _saved_err = sys.stderr
+        sys.stderr = _devnull
+        try:
+            from scapy.all import ARP, Ether, srp, conf, sr1, IP, ICMP, TCP
+        finally:
+            sys.stderr = _saved_err
     SCAPY_AVAILABLE = True
 except ImportError:
     SCAPY_AVAILABLE = False
@@ -158,6 +169,48 @@ def get_local_subnet():
 
     # Final fallback
     return "192.168.1.0/24"
+
+
+def get_default_gateway_windows():
+    """Return the IPv4 default gateway from the Windows routing table (or None)."""
+    try:
+        route_out = subprocess.run(
+            ['powershell', '-NoProfile', '-Command',
+             'Get-NetRoute -DestinationPrefix "0.0.0.0/0" | '
+             'Sort-Object RouteMetric | Select-Object -First 1 -ExpandProperty NextHop'],
+            capture_output=True, text=True, timeout=5
+        )
+        if route_out.returncode == 0:
+            gw = route_out.stdout.strip()
+            if re.match(r'^\d+\.\d+\.\d+\.\d+$', gw):
+                return gw
+    except Exception:
+        pass
+    return None
+
+
+def _subnet_contains_ip(subnet, ip):
+    """Return True if `ip` falls inside `subnet` (e.g. '192.168.1.0/24')."""
+    try:
+        import ipaddress
+        return ipaddress.ip_address(ip) in ipaddress.ip_network(subnet, strict=False)
+    except Exception:
+        return False
+
+
+def get_primary_subnet(subnets, gateway_ip=None):
+    """
+    Pick the subnet that actually carries the machine's traffic.
+    Virtual adapters (Docker/VMware/WSL) have no default gateway and would
+    pollute discovery with wrong IPs, so we restrict sweeping to the subnet
+    that contains the default gateway when one is known.
+    """
+    if gateway_ip:
+        for s in subnets:
+            if _subnet_contains_ip(s, gateway_ip):
+                print(f"[*] Primary subnet (contains gateway {gateway_ip}): {s}")
+                return s
+    return subnets[0] if subnets else None
 
 
 def snmp_get(oid, host, community='public', port=161, timeout=1, retries=1):
@@ -404,15 +457,28 @@ def mac_vendor_lookup(mac):
     return oui_database.get(oui_str, "Unknown")
 
 
-def get_hostname(ip):
-    """Resolve hostname for an IP address using reverse DNS."""
-    try:
-        hostname = socket.gethostbyaddr(ip)[0]
-        return hostname
-    except (socket.herror, socket.gaierror):
-        return None
-    except Exception:
-        return None
+def get_hostname(ip, timeout=1.0):
+    """Resolve hostname for an IP address using reverse DNS (bounded).
+
+    socket.gethostbyaddr has no timeout of its own and on Windows hangs
+    ~10s per unresolvable IP (the socket default timeout is ignored by the
+    Windows resolver). We run it in a daemon thread and abandon it after
+    `timeout` seconds so discovery never blocks on DNS."""
+    import threading
+    result = {}
+
+    def _resolve():
+        try:
+            result["name"] = socket.gethostbyaddr(ip)[0]
+        except Exception:
+            result["name"] = None
+
+    t = threading.Thread(target=_resolve, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        return None  # abandoned thread is daemon, dies with the process
+    return result.get("name")
 
 
 def scan_ports(host, ports=[22, 80, 443, 3389], timeout=1):
@@ -432,72 +498,6 @@ def scan_ports(host, ports=[22, 80, 443, 3389], timeout=1):
         except Exception:
             pass
     return open_ports
-
-
-def detect_device_type(open_ports, mac_vendor=None):
-    """
-    Detect device type based on open ports and MAC vendor.
-    Returns a device type string.
-    """
-    # Common port to service mappings
-    port_services = {
-        22: "SSH",
-        23: "Telnet",
-        25: "SMTP",
-        53: "DNS",
-        80: "HTTP",
-        110: "POP3",
-        143: "IMAP",
-        443: "HTTPS",
-        445: "SMB",
-        3389: "RDP",
-        8080: "HTTP-Proxy",
-        8443: "HTTPS-Alt"
-    }
-
-    # Device type heuristics
-    if 22 in open_ports or 23 in open_ports:
-        if any(vendor in (mac_vendor or "").lower() for vendor in ["cisco", "juniper", "hp", "aruba"]):
-            return "Network Switch/Router"
-        else:
-            return "Linux/Unix Server"
-
-    if 3389 in open_ports:
-        return "Windows Server"
-
-    # Android TV / Chromecast detection
-    if 8080 in open_ports or 9080 in open_ports or 8008 in open_ports:
-        if any(vendor in (mac_vendor or "").lower() for vendor in ["google", "android", "chromecast", "sony", "philips", "tcl", "xiaomi", "hisense", "sharp", "vizio", "samsung", "lg"]):
-            return "Android TV"
-
-    # Smart TV detection (ports 80/443 but no 8080)
-    if 80 in open_ports or 443 in open_ports:
-        if any(vendor in (mac_vendor or "").lower() for vendor in ["samsung", "lg", "sony", "philips", "tcl", "xiaomi", "hisense", "sharp", "vizio", "google", "android"]):
-            return "Smart TV"
-
-    if 80 in open_ports or 443 in open_ports or 8080 in open_ports or 8443 in open_ports:
-        if any(vendor in (mac_vendor or "").lower() for vendor in ["apple", "microsoft"]):
-            return "Workstation"
-        else:
-            return "Web Server"
-
-    if 161 in open_ports or 162 in open_ports:  # SNMP
-        if any(vendor in (mac_vendor or "").lower() for vendor in ["cisco", "juniper", "hp", "dell"]):
-            return "Network Device"
-        else:
-            return "Server"
-
-    # Default classification based on open ports
-    if not open_ports:
-        return "Unknown Device"
-    elif 80 in open_ports or 443 in open_ports:
-        return "Web Server"
-    elif 22 in open_ports:
-        return "SSH Server"
-    elif 3389 in open_ports:
-        return "Windows Host"
-    else:
-        return "Network Device"
 
 
 def traceroute(host, max_hops=30):
@@ -537,11 +537,14 @@ def traceroute(host, max_hops=30):
         return []
 
 
-def ping_sweep(subnet="192.168.1.0/24", timeout=1000, max_workers=20):
+def ping_sweep(subnet="192.168.1.0/24", timeout=900, max_workers=64):
     """Fast parallel ping sweep to discover active hosts on a subnet.
-    Uses limited parallelism to avoid ICMP rate-limiting on consumer routers.
-    Returns list of (ip, success) tuples for hosts that responded."""
+    Uses bounded parallelism + a tiny inter-batch delay to avoid ICMP
+    rate-limiting on consumer routers while staying ~5x faster than the
+    old 20-worker/1s-timeout sweep.
+    Returns list of IPs that responded."""
     import ipaddress
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     net = ipaddress.ip_network(subnet, strict=False)
     hosts = [str(ip) for ip in net.hosts()]
@@ -558,21 +561,20 @@ def ping_sweep(subnet="192.168.1.0/24", timeout=1000, max_workers=20):
             return ip, False
 
     active = []
-    # Process in small batches to avoid ICMP rate limiting
-    for batch_start in range(0, len(hosts), max_workers):
-        batch = hosts[batch_start:batch_start + max_workers]
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+    # Reuse ONE executor across batches (avoids pool teardown between batches)
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        for batch_start in range(0, len(hosts), max_workers):
+            batch = hosts[batch_start:batch_start + max_workers]
             futs = {ex.submit(_ping, ip): ip for ip in batch}
             for f in as_completed(futs):
                 ip, ok = f.result()
                 if ok:
                     active.append(ip)
-        done = min(batch_start + max_workers, len(hosts))
-        print(f"   Sweep progress: {done}/{len(hosts)} ({len(active)} found)")
-        # Small delay between batches to let router's ICMP budget replenish
-        if batch_start + max_workers < len(hosts):
-            time.sleep(0.5)
+            done = min(batch_start + max_workers, len(hosts))
+            print(f"   Sweep progress: {done}/{len(hosts)} ({len(active)} found)")
+            # Small delay between batches to let router's ICMP budget replenish
+            if batch_start + max_workers < len(hosts):
+                time.sleep(0.1)
 
     print(f"[*] Ping sweep complete: {len(active)} active hosts found")
     return active
@@ -582,7 +584,7 @@ def tcp_probe(ip, ports=None, timeout=0.8):
     """Try TCP connection to ports as a lightweight probe for ping-resistant devices.
     Uses non-blocking connect with short timeout. Returns True if any port accepts."""
     if ports is None:
-        ports = (80, 443, 8080, 5353, 1900, 62078, 5000, 8443)
+        ports = (80, 443, 8080)
     import socket
     for port in ports:
         try:
@@ -601,6 +603,24 @@ def is_broadcast_or_network(ip):
     """Check if an IP is a broadcast or network address (x.x.x.0 or x.x.x.255)."""
     parts = ip.split('.')
     return len(parts) == 4 and (parts[3] == '0' or parts[3] == '255')
+
+
+def is_bad_network_ip(ip):
+    """Return True for IPs that should NEVER be treated as LAN devices:
+    multicast (224.0.0.0/4 — the old filter only caught 224/239 and let
+    225–238.x.x slip through as fake devices), link-local APIPA, network/
+    broadcast addresses and loopback."""
+    try:
+        first = int(ip.split('.')[0])
+    except (ValueError, IndexError):
+        return True
+    if 224 <= first <= 239:      # full multicast range
+        return True
+    if ip.startswith('169.254.'):      # APIPA / link-local
+        return True
+    if ip.startswith('127.'):          # loopback
+        return True
+    return is_broadcast_or_network(ip)
 
 
 def tcp_sweep(subnet="192.168.1.0/24", ports=(80, 443), timeout=0.2):
@@ -670,11 +690,11 @@ ALL_ZEROS_MAC = "00:00:00:00:00:00"
 def _is_valid_neighbor(ip, mac, state):
     """Return True only if this neighbor entry represents a real device.
     Filters out:
-    - Loopback addresses (127.x.x.x)
+    - Multicast / link-local / broadcast / loopback addresses
     - Unreachable/Incomplete entries (no device at this IP)
     - Entries with all-zeros MAC (fake placeholder)
     """
-    if ip and ip.startswith("127."):
+    if ip and is_bad_network_ip(ip):
         return False
     if state and state not in VALID_NEIGHBOR_STATES:
         return False
@@ -713,9 +733,7 @@ def parse_arp_table():
                     continue
                 mac_raw = parts[1].replace('-', ':').lower() if len(parts) > 1 and parts[1] else ''
                 state = parts[2].strip() if len(parts) > 2 else ''
-                if (ip.startswith('224.') or ip.startswith('239.') or
-                    ip == '255.255.255.255' or ip.startswith('169.254.') or
-                    is_broadcast_or_network(ip) or ip in seen_ips):
+                if is_bad_network_ip(ip) or ip in seen_ips:
                     continue
                 if len(mac_raw) >= 12:
                     mac = mac_raw if ':' in mac_raw else ':'.join(mac_raw[i:i+2] for i in range(0, 12, 2))
@@ -726,11 +744,13 @@ def parse_arp_table():
                     continue
                 seen_ips.add(ip)
                 vendor = mac_vendor_lookup(mac) if mac else "Unknown"
-                hostname = get_hostname(ip)
+                # hostname is left None here on purpose: it is resolved in the
+                # parallel enrichment phase (per-IP DNS here was the slowest
+                # part of discovery — ~10s per unresolvable host).
                 print(f"   [ARP] {ip} mac={mac or '?'} state={state}")
                 devices.append({
                     "ip": ip, "mac": mac, "vendor": vendor,
-                    "hostname": hostname, "device_type": "Unknown",
+                    "hostname": None, "device_type": "Unknown",
                     "ports": [], "trace_route": []
                 })
     except Exception as e:
@@ -745,19 +765,17 @@ def parse_arp_table():
                 if match:
                     ip = match.group(1)
                     mac = match.group(2).replace('-', ':').lower()
-                    if (ip.startswith('224.') or ip.startswith('239.') or
-                        ip == '255.255.255.255' or ip.startswith('169.254.') or
-                        is_broadcast_or_network(ip) or ip in seen_ips):
+                    if is_bad_network_ip(ip) or ip in seen_ips:
                         continue
                     if mac == ALL_ZEROS_MAC:
                         continue
                     seen_ips.add(ip)
                     vendor = mac_vendor_lookup(mac)
-                    hostname = get_hostname(ip)
+                    # hostname resolved in the parallel enrichment phase (see above)
                     print(f"   [ARP] {ip} mac={mac} (from arp -a)")
                     devices.append({
                         "ip": ip, "mac": mac, "vendor": vendor,
-                        "hostname": hostname, "device_type": "Unknown",
+                        "hostname": None, "device_type": "Unknown",
                         "ports": [], "trace_route": []
                     })
     except Exception as e:
@@ -793,7 +811,140 @@ def resolve_hostname_win(ip):
     return get_hostname(ip)
 
 
-def scan_ports_batch(devices, ports=[22, 80, 443, 3389, 8080], timeout=0.5):
+def _mac_is_randomized(mac):
+    """True if the MAC has the locally-administered bit set (0x02 in the first
+    octet) — i.e. a modern phone/tablet using Wi-Fi privacy (randomized) MACs."""
+    if not mac or len(mac) < 2:
+        return False
+    try:
+        return bool(int(mac[:2], 16) & 0x02)
+    except ValueError:
+        return False
+
+
+# ── Manually-confirmed devices (user-provided ground truth) ────────────────
+# Keyed by MAC so the label follows the device even if DHCP hands it a new IP.
+# The heuristics below cannot see these (random/private MACs or quiet devices),
+# so the user tags them once and the collector applies the label forever.
+MANUAL_DEVICE_TYPES = {
+    "c6:39:75:0a:a8:c8": "Cloud Camera System",   # house camera system (.12)
+    "94:b3:f7:ec:8e:87": "Smart TV",               # living room TV (.20)
+}
+
+
+def classify_device(device):
+    """Enhanced device-type detection.
+
+    Combines, in priority order: user-confirmed MAC override, hostname
+    patterns, randomized-MAC (privacy phones), open-port signatures, and
+    MAC-vendor category. Falls back to 'Unknown' rather than guessing, so the
+    dashboard shows a generic node instead of a confidently-wrong label.
+    """
+    ip = (device.get("ip") or "").strip()
+    hostname = (device.get("hostname") or "").lower().strip()
+    vendor = (device.get("vendor") or "").lower().strip()
+    mac = (device.get("mac") or "").lower().replace("-", ":")
+    ports = set(device.get("ports") or [])
+
+    # ── 0) User-confirmed override wins over every heuristic ──
+    manual = MANUAL_DEVICE_TYPES.get(mac)
+    if manual:
+        return manual
+
+    # ── 1) Hostname is the strongest, most reliable signal ──
+    if hostname and hostname != "null":
+        if any(k in hostname for k in ("iphone", "ipad", "ipod")):
+            return "iPhone/iPad"
+        if any(k in hostname for k in ("printer", "print-", "epson", "canon",
+                                       "brother", "lexmark", "ricoh", "xerox",
+                                       "hp-laserjet", "hp-deskjet", "samsung-m")):
+            return "Printer"
+        if any(k in hostname for k in ("router", "gateway", "mikrotik",
+                                       "openwrt", "wrt", "ap-")):
+            return "Router"
+        if any(k in hostname for k in ("camera", "cam-", "ipcam", "reolink",
+                                       "hikvision", "dahua", "wyze", "nvr")):
+            return "IP Camera"
+        if any(k in hostname for k in ("echo", "alexa", "google-home", "nest",
+                                       "sonos", "speaker", "soundbar", "jbl")):
+            return "Smart Speaker"
+        if any(k in hostname for k in ("playstation", "ps4", "ps5", "xbox",
+                                       "nintendo", "switch", "wii", "steamdeck")):
+            return "Game Console"
+        # Phone BEFORE TV: brands like Samsung/LG make both, but a hostname
+        # containing "galaxy"/"android"/"pixel"... is unambiguously a phone.
+        if any(k in hostname for k in ("android", "pixel", "galaxy", "redmi",
+                                       "poco", "oppo", "vivo", "oneplus",
+                                       "huawei", "honor", "xiaomi", "moto", "nokia",
+                                       "iphone", "ipad", "ipod")):
+            return "Phone"
+        if any(k in hostname for k in ("tv", "smarttv", "television", "tele-",
+                                       "roku", "firetv", "fire-tv", "chromecast",
+                                       "googletv", "androidtv", "android-tv",
+                                       "mi-tv", "hisense", "tcl-", "vizio",
+                                       "skyworth", "vestel", "philips", "panasonic",
+                                       "samsung-", "lg-")):
+            return "Smart TV"
+        if any(k in hostname for k in ("laptop", "desktop", "-pc", "thinkpad",
+                                       "optiplex", "elitedesk", "inspiron", "xps",
+                                       "pavilion", "zenbook", "surface", "vaio")):
+            return "Computer"
+
+    # ── 2) Gateway position (subnet .1) — almost always the router, and it
+    #    usually exposes a web admin UI on 80/443 so this MUST run before the
+    #    port heuristics or the router gets labeled "Web Server/Device". ──
+    parts = ip.split(".")
+    if (len(parts) == 4 and parts[3] == "1" and
+            parts[0] in ("192", "10", "172") and not hostname):
+        return "Router"
+
+    # ── 3) Randomized / privacy MAC → modern phone or tablet ──
+    if _mac_is_randomized(mac):
+        return "Phone/Tablet (MAC random)"
+
+    # ── 3) Open-port signatures ──
+    if ports:
+        if ports & {631, 9100} or 515 in ports:
+            return "Printer"
+        if 53 in ports and (80 in ports or 443 in ports):
+            return "Router"
+        if ports & {8008, 8009, 8443, 8060, 7000, 9080, 9000}:
+            return "Smart TV"
+        if 445 in ports or 139 in ports or 3389 in ports:
+            return "Windows PC"
+        if 62078 in ports:
+            return "iPhone"
+        if 5555 in ports:
+            return "Android Phone"
+        if 22 in ports:
+            return "Linux/Unix Device"
+        if 80 in ports or 443 in ports:
+            return "Web Server/Device"
+
+    # ── 4) MAC-vendor category (only meaningful when the MAC is real) ──
+    if vendor and vendor != "unknown":
+        routers = {"tp-link", "netgear", "linksys", "d-link", "zyxel", "ubiquiti",
+                   "mikrotik", "tenda", "mercusys", "totolink", "cisco"}
+        tvs = {"samsung", "lg", "sony", "philips", "tcl", "xiaomi", "hisense",
+               "sharp", "vizio", "panasonic", "toshiba", "roku"}
+        mobile = {"apple", "samsung", "xiaomi", "huawei", "oneplus", "google",
+                  "lg", "sony", "nokia", "motorola", "honor", "oppo", "vivo"}
+        pcs = {"intel", "dell", "hp", "lenovo", "ibm", "microsoft", "acer",
+               "asus", "toshiba", "vaio"}
+        if vendor in routers:
+            return "Router"
+        if vendor in tvs:
+            return f"{vendor.title()} TV"
+        if vendor in mobile:
+            return f"{vendor.title()} Phone"
+        if vendor in pcs:
+            return f"{vendor.title()} Computer"
+        return f"{vendor.title()} Device"
+
+    return "Unknown"
+
+
+def scan_ports_batch(devices, ports=[22, 80, 443, 3389, 8080], timeout=0.3):
     """Scan common ports on multiple devices in parallel for OS fingerprinting."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -820,118 +971,86 @@ def scan_ports_batch(devices, ports=[22, 80, 443, 3389, 8080], timeout=0.5):
         for f in as_completed(futs):
             ip, open_ports = f.result()
             if open_ports:
-                # Update device in the original list
+                # Record ports only — device-type classification happens in the
+                # enrichment loop via classify_device (single source of truth).
                 for d in devices:
                     if d["ip"] == ip:
                         d["ports"] = open_ports
-                        # Use existing detect_device_type with more mobile-friendly fallback
-                        dtype = detect_device_type(open_ports, d.get("vendor"))
-                        if dtype == "Unknown Device" and d.get("vendor") != "Unknown":
-                            # Mobile device heuristic
-                            dtype = f"{d['vendor']} Device"
-                        d["device_type"] = dtype
-                        print(f"   {ip}: ports={open_ports} -> {d['vendor']} {d['device_type']}")
+                        print(f"   {ip}: ports={open_ports}")
                         break
 
 
 def discover_local_devices_win(sweep=True):
     """Discover local network devices on Windows.
-    Scans ALL detected subnets (Ethernet, Wi-Fi, phone hotspots, etc.)
-    Uses ping sweep as the source of truth for active hosts.
-    Enriches with MAC/vendor from ARP table and adds hostname/device type.
-    Falls back to ARP-only devices (even those not responding to ICMP/TCP).
+
+    Strategy (ordered for speed + correctness):
+      1. Restrict to the PRIMARY subnet (the one carrying the default route)
+         so virtual adapters (Docker/VMware/WSL) and stale interfaces never
+         pollute the list with wrong IPs.
+      2. Warm the ARP cache with a broadcast ping and read it BEFORE the
+         sweep — ARP entries are ground truth and appear in <1s.
+      3. Fast ping sweep to catch ICMP-reachable hosts not yet in ARP.
+      4. Re-read ARP after the sweep and merge.
     Returns a list of device dicts (ip, mac, vendor, hostname, device_type, ports)."""
     subnets = get_windows_subnets()
     if not subnets:
         subnets = [get_local_subnet()]
+    gateway_ip = get_default_gateway_windows()
+    primary = get_primary_subnet(subnets, gateway_ip)
+    if primary:
+        subnets = [primary]
 
+    arp_entries = []
     active_ips = []
     if sweep:
+        # 1. Warm the ARP cache first so enrichment sees every device
+        print("[*] Sending broadcast ping to populate ARP cache...")
+        broadcast_ping(subnets)
+        time.sleep(0.5)
+        arp_entries = parse_arp_table()
+        print(f"[*] Warm ARP cache: {len(arp_entries)} entries")
+
+        # 2. Fast ping sweep to catch ICMP-reachable hosts
         for subnet in subnets:
-            print(f"[*] Sweeping subnet: {subnet}")
-            found = ping_sweep(subnet, timeout=1000, max_workers=20)
-            active_ips.extend(found)
-            time.sleep(0.5)
-        # Remove duplicates
+            active_ips.extend(ping_sweep(subnet))
         active_ips = list(dict.fromkeys(active_ips))
 
-    # Broadcast ping to populate ARP cache with ALL devices
-    print("[*] Sending broadcast ping to populate ARP cache...")
-    broadcast_ping(subnets)
-    time.sleep(1.0)
+        # 3. Re-read ARP after the sweep and merge (dedup by IP)
+        arp_entries_2 = parse_arp_table()
+        seen_arp_ips = {e["ip"] for e in arp_entries}
+        for e in arp_entries_2:
+            if e["ip"] not in seen_arp_ips:
+                arp_entries.append(e)
 
-    # Build ARP lookup table (IP → mac/vendor/hostname)
-    print("[*] Reading Windows ARP cache for enrichment...")
-    arp_entries = parse_arp_table()
-    arp_lookup = {}
-    for e in arp_entries:
-        arp_lookup[e["ip"]] = e
+    arp_lookup = {e["ip"]: e for e in arp_entries}
 
-    # Build device list from ping sweep results, enriched with ARP data
+    # ARP is ground truth: build the device list from ARP, then sweep results
     devices = []
-    for ip in active_ips:
-        arp = arp_lookup.get(ip, {})
-        mac = arp.get("mac")
-        vendor = arp.get("vendor") or "Unknown"
-        hostname = arp.get("hostname")
+    seen_ips = set()
+
+    def _add(ip, mac, vendor, hostname):
+        if ip in seen_ips or is_bad_network_ip(ip):
+            return
+        seen_ips.add(ip)
         devices.append({
-            "ip": ip, "mac": mac, "vendor": vendor,
+            "ip": ip, "mac": mac, "vendor": vendor or "Unknown",
             "hostname": hostname, "device_type": "Unknown",
             "ports": [], "trace_route": []
         })
 
-    # ARP-based fallback: devices in ARP cache that didn't respond to ping
-    # but DO respond to TCP on common ports (catches phones, smart TVs etc.)
-    # PLUS devices that don't respond to anything but are still in the ARP cache
-    arp_ips_missed = [e["ip"] for e in arp_entries if e["ip"] not in active_ips
-                      and not is_broadcast_or_network(e["ip"])]
-    if arp_ips_missed:
-        print(f"[*] Probing {len(arp_ips_missed)} ARP-only IPs with TCP...")
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        def _tcp_check(ip):
-            return ip, tcp_probe(ip)
-        tcp_found = []
-        with ThreadPoolExecutor(max_workers=50) as ex:
-            futs = {ex.submit(_tcp_check, ip): ip for ip in arp_ips_missed}
-            for f in as_completed(futs):
-                ip, alive = f.result()
-                if alive:
-                    tcp_found.append(ip)
-        # Always include ALL ARP entries that aren't already in the device list
-        # (even if they don't respond to TCP — they're on the network)
-        for e in arp_entries:
-            ip = e["ip"]
-            if ip not in active_ips and ip not in tcp_found and not is_broadcast_or_network(ip):
-                # Add it anyway — ARP doesn't lie, this device exists on the LAN
-                tcp_found.append(ip)
-                print(f"   {ip} -> ARP cache entry, added to device list")
-        for ip in tcp_found:
-            arp = arp_lookup.get(ip, {})
-            mac = arp.get("mac")
-            vendor = arp.get("vendor") or "Unknown"
-            hostname = arp.get("hostname")
-            devices.append({
-                "ip": ip, "mac": mac, "vendor": vendor,
-                "hostname": hostname, "device_type": "Unknown",
-                "ports": [], "trace_route": []
-            })
-        print(f"[*] ARP fallback added {len(devices) - len(active_ips)} devices")
+    for e in arp_entries:
+        _add(e["ip"], e.get("mac"), e.get("vendor") or "Unknown", e.get("hostname"))
+    for ip in active_ips:
+        arp = arp_lookup.get(ip, {})
+        _add(ip, arp.get("mac"), arp.get("vendor") or "Unknown", arp.get("hostname"))
 
-    # TCP sweep: catch ICMP-blocking devices that respond on port 80/443
-    known_ips = {d["ip"] for d in devices}
+    # Light TCP sweep on the primary subnet: catch ICMP+ARP-blocking devices
     tcp_added = 0
     for subnet in subnets:
-        tcp_hosts = tcp_sweep(subnet, ports=(80, 443, 8080), timeout=0.3)
-        for ip in tcp_hosts:
-            if ip not in known_ips and not is_broadcast_or_network(ip):
-                devices.append({
-                    "ip": ip, "mac": None, "vendor": "Unknown",
-                    "hostname": None, "device_type": "Unknown",
-                    "ports": [], "trace_route": []
-                })
-                known_ips.add(ip)
+        for ip in tcp_sweep(subnet, ports=(80, 443), timeout=0.2):
+            if ip not in seen_ips and not is_broadcast_or_network(ip):
+                _add(ip, None, "Unknown", None)
                 tcp_added += 1
-                print(f"   {ip} -> TCP probe (port 80/443) OK, added to device list")
     if tcp_added:
         print(f"[*] TCP sweep added {tcp_added} devices")
 
@@ -941,67 +1060,46 @@ def discover_local_devices_win(sweep=True):
 
     print(f"[*] Found {len(devices)} active devices — enriching with hostnames and port scans...")
 
-    # Enrich with better hostnames
-    for d in devices:
-        if not d["hostname"]:
+    # Enrich hostnames in parallel — nbtstat is ~3s/device and was the
+    # dominant bottleneck (sequential loop = tens of seconds on a real LAN)
+    from concurrent.futures import ThreadPoolExecutor
+    def _resolve(d):
+        if not d.get("hostname"):
             name = resolve_hostname_win(d["ip"])
             if name:
                 d["hostname"] = name
                 print(f"   {d['ip']} -> hostname: {name}")
+        return d
+    with ThreadPoolExecutor(max_workers=min(16, len(devices))) as ex:
+        list(ex.map(_resolve, devices))
 
     # Parallel port scan for device type detection
     scan_ports_batch(devices)
 
-    # Detect local machine's own IP
-    try:
-        self_ip = socket.gethostbyname(socket.gethostname())
-    except Exception:
-        self_ip = None
+    # Detect local machine's own IP via the routing table (gethostbyname can
+    # return a virtual/APIPA adapter address on multi-homed machines)
+    self_ip = get_interface_for_destination("8.8.8.8")
+    if not self_ip:
+        try:
+            self_ip = socket.gethostbyname(socket.gethostname())
+        except Exception:
+            self_ip = None
 
-    # For devices still Unknown, use vendor-based heuristic
+    # Classify every device with the enhanced detector (hostname + MAC +
+    # ports + vendor). The machine running the copilot keeps its own label.
     for d in devices:
-        # Mark the machine running the copilot
         if self_ip and d["ip"] == self_ip:
             d["device_type"] = "Copilot Host"
             d["vendor"] = "Self"
             print(f"   {d['ip']} -> local machine (this computer)")
+            continue
 
-        # Detect randomized/private MAC addresses (modern phones)
-        mac = d.get("mac") or ""
-        if len(mac) >= 2:
-            second_char = mac[1]  # second hex digit of first byte
-            if second_char in '26ae' and d["device_type"] in ("Unknown", "Unknown Device"):
-                d["vendor"] = "Private Addr"
-                d["device_type"] = "Phone (MAC random)"
-                print(f"   {d['ip']} -> randomized MAC - phone with privacy enabled")
-
-        if d["device_type"] in ("Unknown", "Unknown Device"):
-            v = d.get("vendor", "Unknown")
-            if v not in ("Unknown",):
-                tv_vendors = {"Samsung", "LG", "Sony", "Philips", "TCL",
-                              "Xiaomi", "Hisense", "Sharp", "Vizio", "Panasonic",
-                              "Toshiba", "Roku"}
-                mobile_vendors = {"Apple", "Samsung", "Xiaomi", "Huawei", "OnePlus",
-                                  "Google", "LG", "Sony", "Nokia", "Motorola"}
-                pc_vendors = {"Intel", "Dell", "HP", "Lenovo", "IBM",
-                              "Compaq", "Microsoft", "VMware", "Acer", "Asus"}
-                if v in tv_vendors:
-                    d["device_type"] = f"{v} TV"
-                elif v in mobile_vendors:
-                    d["device_type"] = f"{v} Mobile"
-                elif v in pc_vendors:
-                    d["device_type"] = f"{v} PC"
-                else:
-                    d["device_type"] = f"{v} Device"
-            else:
-                d["device_type"] = "Unknown Device"
-
-        # Hostname-based override — catch TVs that ports+vendor missed
-        hostname = (d.get("hostname") or "").lower()
-        if "tv" in hostname or "tele" in hostname or "smarttv" in hostname or "television" in hostname:
-            if "tv" not in d["device_type"].lower():
-                print(f"   {d['ip']} -> hostname '{hostname}' suggests TV")
-                d["device_type"] = "Smart TV"
+        if _mac_is_randomized(d.get("mac")):
+            d["vendor"] = "Private Addr"
+        new_type = classify_device(d)
+        if new_type != d.get("device_type"):
+            print(f"   {d['ip']} -> {new_type} (ports={d.get('ports') or []})")
+            d["device_type"] = new_type
 
     print(f"[*] Discovery complete: {len(devices)} devices")
     for d in devices:
@@ -1063,7 +1161,10 @@ def discover_network_devices(subnet=None):
         vendor = mac_vendor_lookup(mac)
         hostname = get_hostname(ip)
         ports = scan_ports(ip, timeout=0.5)  # Quick scan
-        device_type = detect_device_type(ports, vendor)
+        device_type = classify_device({
+            "ip": ip, "mac": mac, "vendor": vendor,
+            "hostname": hostname, "ports": ports
+        })
         trace_route = traceroute(ip, max_hops=5)  # Limited traceroute
 
         # Get SNMP information if available
@@ -1166,12 +1267,12 @@ def generate_metrique_for_host(host):
         is_anomaly = 1 if detecter_anomalie_seuils_adaptatifs(latency, error_rate, host) else 0
         print(f"[INFO] {host}: latency={latency:.2f} ms")
     else:
-        # Ping failed — use simulated normal data so dashboard stays live
-        import random as _r
-        latency     = round(_r.uniform(5, 45), 2)
-        error_rate  = round(_r.uniform(0, 1), 2)
-        is_anomaly  = 0
-        print(f"[WARN] {host}: ping failed — simulated {latency} ms")
+        # Host did not answer the ping — do NOT fabricate a metric for it.
+        # Returning None means no row is written, so offline devices drop out
+        # of the topology automatically (live detection) instead of lingering
+        # forever on simulated data.
+        print(f"[WARN] {host}: ping failed — host offline, no metric written")
+        return None
 
     return {
         "ts": datetime.datetime.now().isoformat(),
@@ -1276,6 +1377,26 @@ def sauvegarder(metrique, mac=None):
     conn.close()
 
 
+def sauvegarder_batch(rows):
+    """Insert multiple (metrique, mac) rows in a single transaction.
+
+    Rows is a list of (metrique_dict, mac) tuples, as produced by the
+    parallel ping cycle. One connection + executemany is far cheaper than
+    opening a sqlite connection per metric."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.executemany("""
+        INSERT INTO network_metrics
+        (ts, host, latency, error_rate, traffic, is_anomaly, mac)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, [(
+        m["ts"], m["host"], m["latency"], m["error_rate"],
+        m["traffic"], m["is_anomaly"], mac
+    ) for m, mac in rows])
+    conn.commit()
+    conn.close()
+
+
 def sauvegarder_proprietes_appareil(ip_address, properties):
     """
     Save device properties to the database
@@ -1293,8 +1414,8 @@ def sauvegarder_proprietes_appareil(ip_address, properties):
 def main():
     parser = argparse.ArgumentParser(description="Network monitor simulator")
     parser.add_argument("--use-file", action="store_true", help="Force using hosts.txt instead of discovery")
-    parser.add_argument("--interval", type=int, default=10, help="Seconds between polling cycles (default: 300 = 5 minutes)")
-    parser.add_argument("--rediscover-interval", type=int, default=120, help="Seconds between network rediscovery (default: 600 = 10 minutes)")
+    parser.add_argument("--interval", type=int, default=10, help="Seconds between polling cycles (default: 10 seconds)")
+    parser.add_argument("--rediscover-interval", type=int, default=300, help="Seconds between network rediscovery (default: 300 = 5 minutes)")
     args = parser.parse_args()
 
     # On crée la base de données si elle n'existe pas
@@ -1302,6 +1423,7 @@ def main():
 
     # Initialize device tracking
     known_devices = {}  # IP -> device_info
+    offline_streak = {}  # IP -> consecutive failed ping cycles
     last_discovery_time = 0
 
     print(f"[INFO] Network Monitor started !")
@@ -1335,30 +1457,20 @@ def main():
                     # Windows: ping sweep + ARP cache (reliable, no admin needed)
                     devices = discover_local_devices_win()
                     if not devices:
-                        hosts_file = os.path.join(os.path.dirname(__file__), "hosts.txt")
-                        host_ips = load_hosts_from_file(hosts_file)
-                        devices = [{"ip": ip, "mac": None, "vendor": "Unknown", "hostname": None,
-                                   "device_type": "Unknown", "ports": [], "trace_route": []}
-                                   for ip in host_ips]
-                        print(f"[INFO] Fallback: loaded {len(host_ips)} hosts from {hosts_file}")
+                        # NOTE: intentionally NOT falling back to hosts.txt — seeding
+                        # public IPs (8.8.8.8, google.com...) would show wrong devices
+                        # on the dashboard. self + gateway are added right below, so
+                        # monitoring always has real hosts.
+                        print("[WARN] Discovery returned no devices — monitoring self + gateway only")
 
                 # ── Dynamically add self + gateway ──────
-                self_ip = None
-                gateway_ip = None
-                try:
-                    self_ip = socket.gethostbyname(socket.gethostname())
-                    # Detect gateway from routing table
-                    route_out = subprocess.run(
-                        ['powershell', '-NoProfile', '-Command',
-                         'Get-NetRoute -DestinationPrefix "0.0.0.0/0" | Select-Object -First 1 -ExpandProperty NextHop'],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    if route_out.returncode == 0:
-                        gw = route_out.stdout.strip()
-                        if re.match(r'^\d+\.\d+\.\d+\.\d+$', gw):
-                            gateway_ip = gw
-                except Exception:
-                    pass
+                self_ip = get_interface_for_destination("8.8.8.8")
+                if not self_ip:
+                    try:
+                        self_ip = socket.gethostbyname(socket.gethostname())
+                    except Exception:
+                        self_ip = None
+                gateway_ip = get_default_gateway_windows()
                 existing_ips = {d["ip"] for d in devices}
                 if self_ip and self_ip not in existing_ips:
                     devices.append({
@@ -1367,24 +1479,51 @@ def main():
                         "device_type": "Copilot Host", "ports": [8000, 8501], "trace_route": []
                     })
                     print(f"[+] Added self: {self_ip}")
-                if gateway_ip and gateway_ip not in existing_ips:
-                    devices.append({
-                        "ip": gateway_ip, "mac": None,
-                        "vendor": "Gateway", "hostname": "gateway",
-                        "device_type": "Router", "ports": [], "trace_route": []
-                    })
-                    print(f"[+] Added gateway: {gateway_ip}")
+                if gateway_ip:
+                    if gateway_ip not in existing_ips:
+                        devices.append({
+                            "ip": gateway_ip, "mac": None,
+                            "vendor": "Gateway", "hostname": "gateway",
+                            "device_type": "Router", "ports": [], "trace_route": []
+                        })
+                        print(f"[+] Added gateway: {gateway_ip}")
+                    else:
+                        # The gateway was auto-discovered and typed "Web Server"
+                        # (router admin UI opens 80/443). Force the correct type —
+                        # properties are saved with the others below.
+                        for d in devices:
+                            if d["ip"] == gateway_ip:
+                                d["vendor"] = d.get("vendor") or "Gateway"
+                                d["hostname"] = d.get("hostname") or "gateway"
+                                d["device_type"] = "Router"
+                                print(f"[+] Gateway {gateway_ip} typed as Router")
+                                break
 
                 # Update known devices
                 new_devices = []
+                current_ips = set()
                 for device in devices:
                     ip = device["ip"]
+                    current_ips.add(ip)
                     if ip not in known_devices:
                         new_devices.append(device)
                         print(f"[INFO] New device discovered: {ip} ({device.get('mac', 'N/A')}) - {device['vendor']} - {device['device_type']}")
                     else:
                         # Update existing device information
                         known_devices[ip].update(device)
+
+                # MAC-stable identity: if a known device reappears under a new IP
+                # (DHCP re-assignment) and its old IP is no longer on the network,
+                # follow the MAC instead of showing a stale duplicate.
+                mac_to_ip = {d.get("mac"): d["ip"] for d in devices if d.get("mac")}
+                for mac, new_ip in mac_to_ip.items():
+                    for old_ip, info in list(known_devices.items()):
+                        if (info.get("mac") == mac and old_ip != new_ip
+                                and old_ip not in current_ips and new_ip in current_ips):
+                            print(f"[INFO] Device {mac} moved IP {old_ip} -> {new_ip}")
+                            info["ip"] = new_ip
+                            known_devices[new_ip] = info
+                            del known_devices[old_ip]
 
                 # Add new devices to known devices and save their properties
                 current_ips = []
@@ -1412,47 +1551,39 @@ def main():
                 # Cool-down delay after ping sweep to let ICMP rate-limiting expire
                 time.sleep(2)
 
-            # ── Mini-discovery every cycle: broadcast ping + ARP cache for new devices ──
-            try:
-                broadcast_ping()
-                time.sleep(0.3)
-                new_arp = parse_arp_table()
-                for d in new_arp:
-                    ip = d["ip"]
-                    if ip not in known_devices and not is_broadcast_or_network(ip):
-                        known_devices[ip] = d
-                        sauvegarder_proprietes_appareil(ip, {
-                            "vendor": d.get("vendor", "Unknown"),
-                            "hostname": d.get("hostname"),
-                            "device_type": "Unknown",
-                            "ports": [],
-                            "snmp_info": {}
-                        })
-                        print(f"[INFO] New device detected via ARP (between cycles): {ip}")
-            except Exception:
-                pass
+            # ── Mini-discovery (every ~60s): broadcast ping + ARP cache for new devices ──
+            # Gated so we don't spawn a PowerShell process every 10s cycle.
+            if time.time() - getattr(main, "_last_mini_discovery", 0) >= 60:
+                main._last_mini_discovery = time.time()
+                try:
+                    broadcast_ping()
+                    time.sleep(0.3)
+                    new_arp = parse_arp_table()
+                    for d in new_arp:
+                        ip = d["ip"]
+                        if ip not in known_devices and not is_broadcast_or_network(ip):
+                            # Classify BEFORE saving — previously this path saved
+                            # a hardcoded "Unknown", which is why some phones
+                            # (e.g. .16) showed up as generic nodes.
+                            if _mac_is_randomized(d.get("mac")):
+                                d["vendor"] = "Private Addr"
+                            known_devices[ip] = d
+                            sauvegarder_proprietes_appareil(ip, {
+                                "vendor": d.get("vendor", "Unknown"),
+                                "hostname": d.get("hostname"),
+                                "device_type": classify_device(d),
+                                "ports": d.get("ports") or [],
+                                "snmp_info": {}
+                            })
+                            print(f"[INFO] New device detected via ARP (between cycles): {ip}")
+                except Exception:
+                    pass
 
-            # ── DB recovery: add hosts from metrics that discovery might have missed ──
-            try:
-                conn = sqlite3.connect(DB_PATH)
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT DISTINCT host, ts FROM network_metrics
-                    WHERE ts >= ?
-                    ORDER BY ts DESC
-                """, ((datetime.datetime.now() - datetime.timedelta(minutes=30)).isoformat(),))
-                for row in cursor.fetchall():
-                    ip = row[0]
-                    if ip not in known_devices and not is_broadcast_or_network(ip):
-                        known_devices[ip] = {
-                            "ip": ip, "mac": None, "vendor": "Unknown",
-                            "hostname": None, "device_type": "Unknown",
-                            "ports": [], "trace_route": []
-                        }
-                        print(f"[INFO] Host recovered from DB (previous run): {ip}")
-                conn.close()
-            except Exception:
-                pass
+            # NOTE: the old "recover hosts from DB" block is intentionally gone.
+            # It re-added ANY host seen in the last 30 minutes to the monitoring
+            # list — including devices that were no longer on the network — which
+            # is exactly why offline devices kept appearing in the topology.
+            # Discovery + ARP are the ONLY source of truth now (live detection).
 
             # Prepare hosts for monitoring (IP and MAC pairs)
             hosts_to_monitor = [(device["ip"], device.get("mac")) for device in known_devices.values()]
@@ -1467,26 +1598,47 @@ def main():
             hosts = [device["ip"] for device in known_devices.values()]
             print(f"[INFO] Monitoring {len(hosts)} devices: {', '.join(hosts[:5])}{'...' if len(hosts) > 5 else ''}")
 
-            # Ping ALL hosts in parallel for fast cycle times
+            # Ping ALL hosts in parallel, then write all metrics in ONE batch insert
+            # (avoiding N separate sqlite connections per cycle)
             from concurrent.futures import ThreadPoolExecutor, as_completed
-            def _ping_and_save(host_mac):
+            def _ping(host_mac):
                 host, mac = host_mac
                 metrique = generate_metrique_for_host(host)
-                if metrique is not None:
-                    sauvegarder(metrique, mac=mac)
-                return host, metrique is not None
+                return host, metrique is not None, metrique, mac
 
+            rows = []
             results = []
             with ThreadPoolExecutor(max_workers=min(20, len(hosts_to_monitor))) as ex:
-                futs = {ex.submit(_ping_and_save, hm): hm for hm in hosts_to_monitor}
+                futs = {ex.submit(_ping, hm): hm for hm in hosts_to_monitor}
                 for f in as_completed(futs):
-                    host, ok = f.result()
+                    host, ok, metrique, mac = f.result()
                     results.append((host, ok))
-                    if not ok:
+                    if ok and metrique is not None:
+                        rows.append((metrique, mac))
+                    else:
                         print(f"   {host}: ping failed")
+            if rows:
+                sauvegarder_batch(rows)
             ok_count = sum(1 for _, ok in results if ok)
             fail_count = len(results) - ok_count
             print(f"[CYCLE] Pinged {len(results)} hosts: {ok_count} OK, {fail_count} failed")
+
+            # Wi-Fi power-save: phones/TVs sleep for tens of seconds without
+            # answering pings, so DON'T drop after a few failures — they just
+            # vanish from the topology (via the dashboard's liveness window)
+            # and reappear the instant they answer again. Only drop after a
+            # long streak (~2.5 min at 10s cycles); the full rediscovery prunes
+            # devices that are truly gone.
+            for host, ok in results:
+                if ok:
+                    offline_streak.pop(host, None)
+                else:
+                    offline_streak[host] = offline_streak.get(host, 0) + 1
+            for host, streak in list(offline_streak.items()):
+                if streak >= 15:
+                    print(f"[INFO] {host} offline for {streak} cycles — removing from monitoring")
+                    known_devices.pop(host, None)
+                    offline_streak.pop(host, None)
 
             print()  # Blank line between cycles
 
@@ -1494,129 +1646,6 @@ def main():
             time.sleep(args.interval)
     except KeyboardInterrupt:
         print("\n🛑 Network Monitor arrêté par l'utilisateur.")
-
-
-def snmp_get(oid, host, community='public', port=161, timeout=1, retries=1):
-    """
-    Perform an SNMP GET operation on a host.
-    Returns the value if successful, None otherwise.
-    """
-    if not SNMP_AVAILABLE:
-        return None
-
-    try:
-        error_indication, error_status, error_index, var_binds = next(
-            getCmd(SnmpEngine(),
-                   CommunityData(community, mpModel=0),
-                   UdpTransportTarget((host, port), timeout=timeout, retries=retries),
-                   ContextData(),
-                   ObjectType(ObjectIdentity(oid)))
-        )
-
-        if error_indication:
-            return None
-        elif error_status:
-            return None
-        else:
-            for var_bind in var_binds:
-                return str(var_bind[1])
-    except Exception:
-        return None
-
-
-def snmp_get_system_info(host, community='public'):
-    """
-    Get basic system information from a device via SNMP.
-    Returns a dictionary with system info or empty dict if failed.
-    """
-    if not SNMP_AVAILABLE:
-        return {}
-
-    # Common OIDs for system information
-    oids = {
-        'sysDescr': '1.3.6.1.2.1.1.1.0',      # System Description
-        'sysObjectID': '1.3.6.1.2.1.1.2.0',   # System Object ID
-        'sysUpTime': '1.3.6.1.2.1.1.3.0',     # System Up Time
-        'sysContact': '1.3.6.1.2.1.1.4.0',    # System Contact
-        'sysName': '1.3.6.1.2.1.1.5.0',       # System Name
-        'sysLocation': '1.3.6.1.2.1.1.6.0'    # System Location
-    }
-
-    result = {}
-    for key, oid in oids.items():
-        value = snmp_get(oid, host, community)
-        if value is not None:
-            result[key] = value
-
-    return result
-
-
-def snmp_get_interfaces(host, community='public'):
-    """
-    Get interface information from a device via SNMP.
-    Returns a list of interface dictionaries or empty list if failed.
-    """
-    if not SNMP_AVAILABLE:
-        return []
-
-    try:
-        # IF-MIB::ifDescr - Interface descriptions
-        # IF-MIB::ifType - Interface types
-        # IF-MIB::ifMtu - Interface MTU
-        # IF-MIB::ifSpeed - Interface speed
-        # IF-MIB::ifPhysAddress - Interface MAC address
-        # IF-MIB::ifAdminStatus - Interface admin status
-        # IF-MIB::ifOperStatus - Interface operational status
-
-        base_oid = '1.3.6.1.2.1.2.2.1'  # ifEntry
-
-        # We'll walk the ifTable to get all interfaces
-        # For simplicity, we'll just get a few key fields for the first few interfaces
-
-        interfaces = []
-        for i in range(1, 11):  # Get first 10 interfaces
-            if_index = f"{base_oid}.{i}"
-
-            # Get interface description
-            if_descr = snmp_get(f"{if_index}.2", host, community)
-            if if_descr is None:
-                break  # No more interfaces
-
-            # Get other interface properties
-            if_type = snmp_get(f"{if_index}.3", host, community)
-            if_mtu = snmp_get(f"{if_index}.4", host, community)
-            if_speed = snmp_get(f"{if_index}.5", host, community)
-            if_physaddr = snmp_get(f"{if_index}.6", host, community)
-            if_admin_status = snmp_get(f"{if_index}.7", host, community)
-            if_oper_status = snmp_get(f"{if_index}.8", host, community)
-
-            # Parse MAC address if present
-            mac_address = None
-            if if_physaddr:
-                try:
-                    # Convert hex string to MAC format
-                    hex_parts = if_physaddr.replace(':', '').replace('-', '')
-                    if len(hex_parts) == 12:
-                        mac_address = ':'.join([hex_parts[i:i+2] for i in range(0, 12, 2)])
-                except:
-                    pass
-
-            interface = {
-                'index': i,
-                'description': if_descr,
-                'type': if_type,
-                'mtu': int(if_mtu) if if_mtu and if_mtu.isdigit() else None,
-                'speed': int(if_speed) if if_speed and if_speed.isdigit() else None,
-                'mac_address': mac_address,
-                'admin_status': if_admin_status,
-                'oper_status': if_oper_status
-            }
-
-            interfaces.append(interface)
-
-        return interfaces
-    except Exception:
-        return []
 
 
 if __name__ == "__main__":

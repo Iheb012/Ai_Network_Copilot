@@ -60,3 +60,16 @@ docker-compose.override.yml
 # SQLite
 *.db
 *.sqlite3
+
+# Build artifacts (PyInstaller)
+*.exe
+*.spec
+dist/
+
+# Large downloaded media (black-hole background video)
+dashboard/static/*.mp4
+
+# Editor / scratch backups
+*.backup
+*.backup*
+*~

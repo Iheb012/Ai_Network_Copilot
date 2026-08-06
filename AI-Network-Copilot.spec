@@ -2,10 +2,10 @@
 
 
 a = Analysis(
-    ['C:\\Users\\Pc\\Desktop\\projects\\stage\\ai_network_copilot\\launcher.py'],
+    ['launcher.py'],
     pathex=[],
     binaries=[],
-    datas=[('C:\\Users\\Pc\\Desktop\\projects\\stage\\ai_network_copilot\\version.txt', '.')],
+    datas=[],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -23,7 +23,6 @@ exe = EXE(
     a.datas,
     [],
     name='AI-Network-Copilot',
-    icon='C:\\Users\\Pc\\Desktop\\projects\\stage\\ai_network_copilot\\dashboard\\static\\app-icon.ico',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -36,4 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=['dashboard\\static\\app-icon.ico'],
 )

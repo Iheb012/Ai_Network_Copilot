@@ -170,7 +170,11 @@ def save_device_properties(device_ip: str, properties: Dict[str, Any]):
 
 
 def cleanup_stale_devices(active_ips: List[str]):
-    """Remove all traces of devices no longer on the network."""
+    """Remove device properties for devices no longer on the network.
+
+    network_metrics rows are deliberately KEPT: a flaky discovery pass must
+    never wipe a device's history (get_devices() already filters to a live
+    window, so stale metrics don't pollute the topology)."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     placeholders = ",".join("?" for _ in active_ips) if active_ips else "''"
@@ -181,14 +185,8 @@ def cleanup_stale_devices(active_ips: List[str]):
     """, active_ips)
     dp_deleted = cursor.rowcount
 
-    cursor.execute(f"""
-        DELETE FROM network_metrics
-        WHERE host NOT IN ({placeholders})
-    """, active_ips)
-    nm_deleted = cursor.rowcount
-
-    if dp_deleted or nm_deleted:
-        print(f"   [cleanup] Removed {dp_deleted} property rows + {nm_deleted} metric rows for stale devices")
+    if dp_deleted:
+        print(f"   [cleanup] Removed {dp_deleted} property rows for stale devices")
     conn.commit()
     conn.close()
 
@@ -287,17 +285,19 @@ def creer_base_de_donnees():
     conn.commit()
     conn.close()
 
-def get_devices(live_only: bool = True, max_age_minutes: int = 5) -> List[dict]:
+def get_devices(live_only: bool = True, max_age_minutes: int = 15) -> List[dict]:
     """Get discovered devices with their properties.
     By default (live_only=True) only returns devices with metrics
     seen in the last `max_age_minutes` minutes — this gives a live
-    topology that excludes offline/stale devices from previous runs."""
+    topology that excludes offline/stale devices from previous runs.
+    NOTE: the collector writes timestamps with datetime.now() (local time),
+    so the cutoff must be computed with now(), not utcnow()."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
     # ── Find recently active hosts from metrics ──
-    cutoff = (datetime.datetime.utcnow() - datetime.timedelta(minutes=max_age_minutes)).isoformat()
+    cutoff = (datetime.datetime.now() - datetime.timedelta(minutes=max_age_minutes)).isoformat()
     cursor.execute("""
         SELECT DISTINCT m.host, MAX(m.ts) AS last_seen
         FROM network_metrics m
