@@ -26,8 +26,9 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
-VERSION = "1.0.0"
-UPDATE_URL = "https://api.github.com/repos/anomalyco/ai-network-copilot/releases/latest"
+VERSION_FILE = "version.txt"
+UPDATE_URL = "https://api.github.com/repos/Iheb012/Ai_Network_Copilot/releases/latest"
+MAX_OUTPUT_LINES = 300
 
 # Find the project root by looking for the api/ directory (walk up from exe/script location)
 _PROJECT_CANDIDATE = Path(sys.executable).parent.resolve() if getattr(sys, 'frozen', False) else Path(__file__).parent.resolve()
@@ -76,6 +77,8 @@ class Service:
             line = self.process.stdout.readline()
             if line:
                 self.output.append(line.decode("utf-8", errors="replace").rstrip())
+                if len(self.output) > MAX_OUTPUT_LINES:
+                    self.output = self.output[-MAX_OUTPUT_LINES:]
         self.running = False
 
     def stop(self):
@@ -110,7 +113,7 @@ class Service:
 def print_header():
     os.system("cls" if sys.platform == "win32" else "clear")
     print("=" * 56)
-    print("   AI NETWORK COPILOT  v" + VERSION)
+    print("   AI NETWORK COPILOT  v" + get_local_version())
     print("   Network Monitoring & Anomaly Detection")
     print("=" * 56)
     print()
@@ -118,16 +121,23 @@ def print_header():
 
 
 def get_local_version():
-    return VERSION
+    version_path = PROJECT_DIR / VERSION_FILE
+    try:
+        if version_path.exists():
+            return version_path.read_text(encoding="utf-8").strip() or "0.0.0"
+    except Exception:
+        pass
+    return "0.0.0"
 
 
 def check_for_update():
     try:
+        current_version = get_local_version()
         req = urllib.request.Request(UPDATE_URL, headers={"User-Agent": "AI-Network-Copilot"})
         resp = urllib.request.urlopen(req, timeout=5)
         data = json.loads(resp.read().decode())
         latest = data.get("tag_name", "").lstrip("v")
-        if latest and latest != VERSION:
+        if latest and latest != current_version:
             return latest, data.get("html_url", "")
     except Exception:
         pass
@@ -135,9 +145,10 @@ def check_for_update():
 
 
 def run_update_sequence():
+    current_version = get_local_version()
     latest, url = check_for_update()
     if latest:
-        print(f"\n  [UPDATE] v{VERSION} -> v{latest}")
+        print(f"\n  [UPDATE] v{current_version} -> v{latest}")
         print(f"     {url}")
         print("  Download the latest release and extract it over this folder.")
     else:

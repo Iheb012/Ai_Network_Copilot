@@ -25,13 +25,17 @@ def ping_host(host):
     Returns (latency_ms, success) where latency_ms is float or None if failed.
     """
     try:
-        # Windows ping command: -n number of echoes, -w timeout in milliseconds
-        # We'll do 1 echo with 1 second timeout
+        if sys.platform == "win32":
+            cmd = ['ping', '-n', '1', '-w', '1000', host]
+            cmd_timeout = 2
+        else:
+            cmd = ['ping', '-c', '1', '-W', '1', host]
+            cmd_timeout = 2
         output = subprocess.run(
-            ['ping', '-n', '1', '-w', '1000', host],
+            cmd,
             capture_output=True,
             text=True,
-            timeout=2  # subprocess timeout slightly longer than ping timeout
+            timeout=cmd_timeout
         )
         if output.returncode == 0:
             # Search for time=XX ms pattern

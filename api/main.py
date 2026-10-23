@@ -1,4 +1,5 @@
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Optional, Set
 import datetime
@@ -92,6 +93,12 @@ def _is_hotspot_network(devices):
 
 # Import detection bridge (Personne A's ML engine — replaces raw DB queries)
 from detection_bridge import get_alerts_with_causes, get_metrics_with_detection, analyser_metrique_temps_reel
+
+def _build_ping_command(target: str, timeout_ms: int = 1000):
+    if sys.platform == "win32":
+        return ['ping', '-n', '1', '-w', str(timeout_ms), target], max(2, timeout_ms / 1000 + 1)
+    timeout_s = max(1, int(timeout_ms / 1000))
+    return ['ping', '-c', '1', '-W', str(timeout_s), target], max(2, timeout_s + 1)
 
 @app.on_event("startup")
 async def startup_event():
@@ -332,11 +339,12 @@ async def ping_host_endpoint(host: str):
         def do_ping(target):
             """Try to ping the host using subprocess. Returns (latency, success)."""
             try:
+                cmd, cmd_timeout = _build_ping_command(target, timeout_ms=1000)
                 output = subprocess.run(
-                    ['ping', '-n', '1', '-w', '1000', target],
+                    cmd,
                     capture_output=True,
                     text=True,
-                    timeout=2
+                    timeout=cmd_timeout
                 )
                 if output.returncode == 0:
                     match = re.search(r'time[<=](\d+\.?\d*)\s*ms', output.text, re.IGNORECASE)
@@ -492,6 +500,6 @@ async def get_topology_endpoint():
         raise HTTPException(status_code=500, detail="Failed to fetch topology data")
 
 @app.exception_handler(Exception)
-async def generic_exception_handler(request, exc):
+async def generic_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled exception: {exc}")
-    return HTTPException(status_code=500, detail="Internal server error")
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})

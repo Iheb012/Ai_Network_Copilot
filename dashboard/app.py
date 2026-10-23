@@ -25,7 +25,8 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-API_BASE_URL = "http://localhost:8000"
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000").rstrip("/")
+API_WS_BASE_URL = os.getenv("API_WS_BASE_URL", API_BASE_URL.replace("http://", "ws://").replace("https://", "wss://")).rstrip("/")
 
 # ─────────────────────────────────────────────
 #  SESSION STATE
@@ -277,18 +278,14 @@ websocket_js = """
 <script>
 // WebSocket connections
 let wsConnections = {};
+const apiWsBase = "__API_WS_BASE_URL__";
 
 // Initialize WebSocket connections
 function initWebSockets() {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.hostname;
-    const port = window.location.port ? `:${window.location.port}` : '';
-    const baseUrl = `${protocol}//${host}${port}`;
-
     // Connect to metrics WebSocket
-    wsConnections.metrics = new WebSocket(`${baseUrl}/ws/metrics`);
-    wsConnections.messages = new WebSocket(`${baseUrl}/ws/alerts`);
-    wsConnections.topology = new WebSocket(`${baseUrl}/ws/topology`);
+    wsConnections.metrics = new WebSocket(`${apiWsBase}/ws/metrics`);
+    wsConnections.messages = new WebSocket(`${apiWsBase}/ws/alerts`);
+    wsConnections.topology = new WebSocket(`${apiWsBase}/ws/topology`);
 
     // Handle messages from all WebSocket connections
     Object.keys(wsConnections).forEach(type => {
@@ -391,6 +388,7 @@ if (document.readyState === 'loading') {
 }
 </script>
 """
+websocket_js = websocket_js.replace("__API_WS_BASE_URL__", API_WS_BASE_URL)
 
 # Add the WebSocket JavaScript to the Streamlit app
 st.components.v1.html(websocket_js, height=0)

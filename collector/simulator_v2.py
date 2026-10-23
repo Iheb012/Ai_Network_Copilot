@@ -18,6 +18,7 @@ import os
 import argparse
 import socket
 import struct
+import importlib.util
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'network.db')
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -33,9 +34,15 @@ except ImportError:
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from detection.rules import SEUILS, detecter_anomalie_seuils_adaptatifs
 
-# Add the api directory to path to import database functions
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'api'))
-from database import creer_base_de_donnees
+def _load_api_database_module():
+    api_database_path = os.path.join(os.path.dirname(__file__), '..', 'api', 'database.py')
+    spec = importlib.util.spec_from_file_location("api_database", api_database_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+_API_DATABASE = _load_api_database_module()
+creer_base_de_donnees = _API_DATABASE.creer_base_de_donnees
 
 # Try to import scapy for ARP scanning; if not available, fallback to file-based hosts.
 # NOTE: scapy is only used for OPTIONAL Linux/Mac ARP scans and traceroute — the
@@ -1228,9 +1235,17 @@ def ping_host(host, timeout_ms=800):
     Returns (latency_ms, success).
     """
     try:
+        if sys.platform == "win32":
+            cmd = ['ping', '-n', '1', '-w', str(timeout_ms), host]
+            cmd_timeout = timeout_ms // 1000 + 2
+        else:
+            timeout_s = max(1, int(timeout_ms / 1000))
+            cmd = ['ping', '-c', '1', '-W', str(timeout_s), host]
+            cmd_timeout = timeout_s + 2
         proc = subprocess.run(
-            ['ping', '-n', '1', '-w', str(timeout_ms), host],
-            capture_output=True, timeout=timeout_ms//1000 + 2
+            cmd,
+            capture_output=True,
+            timeout=cmd_timeout
         )
         if proc.returncode != 0:
             return None, False
@@ -1401,14 +1416,7 @@ def sauvegarder_proprietes_appareil(ip_address, properties):
     """
     Save device properties to the database
     """
-    # Add the API directory to path to import database functions
-    api_path = os.path.join(os.path.dirname(__file__), '..', 'api')
-    if api_path not in sys.path:
-        sys.path.insert(0, api_path)
-    from database import save_device_properties
-
-    # Save the properties
-    save_device_properties(ip_address, properties)
+    _API_DATABASE.save_device_properties(ip_address, properties)
 
 
 def main():
@@ -1543,8 +1551,7 @@ def main():
                     sauvegarder_proprietes_appareil(device["ip"], properties)
 
                 # Remove stale devices from database (no longer on network)
-                from database import cleanup_stale_devices
-                cleanup_stale_devices(current_ips)
+                _API_DATABASE.cleanup_stale_devices(current_ips)
 
                 last_discovery_time = current_time
                 print(f"[SUCCESS] Discovery complete. Monitoring {len(known_devices)} devices.")

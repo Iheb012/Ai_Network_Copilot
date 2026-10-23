@@ -102,6 +102,8 @@ uvicorn main:app --reload --port 8000
 Terminal 3 — Dashboard:
 ```batch
 cd dashboard
+set API_BASE_URL=http://localhost:8000
+set API_WS_BASE_URL=ws://localhost:8000
 streamlit run app.py --server.port 8501
 ```
 
@@ -151,12 +153,15 @@ Navigate to **[http://localhost:8501](http://localhost:8501)**
 
 ```bash
 # Build & run API
-docker build -t ai-network-api ./api
+docker build -t ai-network-api -f api/Dockerfile .
 docker run -p 8000:8000 ai-network-api
 
 # Build & run Dashboard
 docker build -t ai-network-dashboard ./dashboard
-docker run -p 8501:8501 ai-network-dashboard
+docker run -p 8501:8501 \
+  -e API_BASE_URL=http://host.docker.internal:8000 \
+  -e API_WS_BASE_URL=ws://host.docker.internal:8000 \
+  ai-network-dashboard
 ```
 
 ---
@@ -167,6 +172,9 @@ docker run -p 8501:8501 ai-network-dashboard
 - fastapi
 - uvicorn
 - pydantic
+- pandas
+- joblib
+- scikit-learn
 
 ### Dashboard (`dashboard/requirements.txt`)
 - streamlit
@@ -261,4 +269,3 @@ CREATE TABLE network_metrics (
 - Scapy ARP scanning may need the Npcap/WinPcap driver on Windows
 - The pre-trained ML model (`detection/model.pkl`) can be retrained by running `detection/ml_model.py`
 - Custom device type overrides can be set in `dashboard/app.py` (`_DEVICE_TYPE_OVERRIDES` dict)
-
