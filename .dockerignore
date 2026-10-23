@@ -1,0 +1,9 @@
+# keep secrets and junk out of Docker images
+data/.api_key
+data/*.db
+.env
+.env.*
+venv/
+.git/
+__pycache__/
+*.exe

@@ -16,13 +16,14 @@ import urllib.error
 from pathlib import Path
 
 VERSION_FILE = "version.txt"
-UPDATE_URL = "https://api.github.com/repos/anomalyco/ai-network-copilot/releases/latest"
+UPDATE_URL = "https://api.github.com/repos/Iheb012/Ai_Network_Copilot/releases/latest"
+PROJECT_DIR = Path(__file__).parent.resolve()
 
 
 def get_current_version():
-    vf = Path(VERSION_FILE)
+    vf = PROJECT_DIR / VERSION_FILE
     if vf.exists():
-        return vf.read_text().strip()
+        return vf.read_text(encoding="utf-8").strip()
     return "0.0.0"
 
 
@@ -44,6 +45,11 @@ def check_latest():
 
 def apply_update(zip_path, target_dir):
     with zipfile.ZipFile(zip_path, "r") as zf:
+        target_dir = Path(target_dir).resolve()
+        for member in zf.infolist():
+            member_path = (target_dir / member.filename).resolve()
+            if target_dir not in member_path.parents and member_path != target_dir:
+                raise ValueError(f"Unsafe archive path detected: {member.filename}")
         zf.extractall(target_dir)
     return True
 
@@ -78,12 +84,12 @@ def main():
                 tmp.write(resp.read())
             tmp_path = tmp.name
 
-        target = Path(__file__).parent.resolve()
+        target = PROJECT_DIR
         apply_update(tmp_path, target)
         os.unlink(tmp_path)
 
         # Update version file
-        (target / VERSION_FILE).write_text(latest)
+        (target / VERSION_FILE).write_text(latest, encoding="utf-8")
         print(f"Updated to v{latest}! Please restart the application.")
     except Exception as e:
         print(f"Update failed: {e}")

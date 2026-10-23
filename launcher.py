@@ -11,6 +11,7 @@ import time
 import json
 import shutil
 import threading
+import secrets
 import subprocess
 import urllib.request
 import urllib.error
@@ -26,8 +27,9 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
-VERSION = "1.0.0"
-UPDATE_URL = "https://api.github.com/repos/anomalyco/ai-network-copilot/releases/latest"
+VERSION_FILE = "version.txt"
+UPDATE_URL = "https://api.github.com/repos/Iheb012/Ai_Network_Copilot/releases/latest"
+MAX_OUTPUT_LINES = 300
 
 # Find the project root by looking for the api/ directory (walk up from exe/script location)
 _PROJECT_CANDIDATE = Path(sys.executable).parent.resolve() if getattr(sys, 'frozen', False) else Path(__file__).parent.resolve()
@@ -37,7 +39,50 @@ for _ in range(5):  # walk up max 5 levels
         break
     PROJECT_DIR = PROJECT_DIR.parent
 
-VENV_PYTHON = PROJECT_DIR / "venv" / "Scripts" / "python.exe"
+def _find_venv_python():
+    """Windows (venv/Scripts) or Linux/macOS (venv/bin); also accepts .venv."""
+    for rel in (("venv", "Scripts", "python.exe"), ("venv", "bin", "python"),
+                (".venv", "Scripts", "python.exe"), (".venv", "bin", "python")):
+        candidate = PROJECT_DIR.joinpath(*rel)
+        if candidate.exists():
+            return candidate
+    return PROJECT_DIR / "venv" / "Scripts" / "python.exe"
+
+
+VENV_PYTHON = _find_venv_python()
+
+
+def ensure_api_key():
+    """Make sure every service uses the same API key.
+
+    Uses AI_COPILOT_API_KEY if set, otherwise data/.api_key (created on first
+    run). The key is exported to the environment so the collector, API and
+    dashboard processes started below inherit it."""
+    key = os.environ.get("AI_COPILOT_API_KEY", "").strip()
+    if not key:
+        key_file = PROJECT_DIR / "data" / ".api_key"
+        try:
+            if key_file.exists():
+                key = key_file.read_text(encoding="utf-8").strip()
+            if not key:
+                key_file.parent.mkdir(parents=True, exist_ok=True)
+                key = secrets.token_urlsafe(32)
+                key_file.write_text(key, encoding="utf-8")
+        except OSError:
+            key = secrets.token_urlsafe(32)   # per-run key if disk is read-only
+    os.environ["AI_COPILOT_API_KEY"] = key
+    return key
+
+
+# Services listen on this machine only. To reach the dashboard/API from other
+# devices on your network, set AI_COPILOT_HOST=0.0.0.0 (only do this on a
+# network you trust: the dashboard page contains the API key).
+BIND_HOST = os.environ.get("AI_COPILOT_HOST", "127.0.0.1")
+
+# `python launcher.py --lite` turns off the dashboard's 3D background and blur
+# effects. Use it on virtual machines or computers without GPU acceleration.
+if "--lite" in sys.argv:
+    os.environ["AI_COPILOT_LITE"] = "1"
 
 
 def get_venv_python():
@@ -76,6 +121,8 @@ class Service:
             line = self.process.stdout.readline()
             if line:
                 self.output.append(line.decode("utf-8", errors="replace").rstrip())
+                if len(self.output) > MAX_OUTPUT_LINES:
+                    self.output = self.output[-MAX_OUTPUT_LINES:]
         self.running = False
 
     def stop(self):
@@ -110,7 +157,7 @@ class Service:
 def print_header():
     os.system("cls" if sys.platform == "win32" else "clear")
     print("=" * 56)
-    print("   AI NETWORK COPILOT  v" + VERSION)
+    print("   AI NETWORK COPILOT  v" + get_local_version())
     print("   Network Monitoring & Anomaly Detection")
     print("=" * 56)
     print()
@@ -118,16 +165,23 @@ def print_header():
 
 
 def get_local_version():
-    return VERSION
+    version_path = PROJECT_DIR / VERSION_FILE
+    try:
+        if version_path.exists():
+            return version_path.read_text(encoding="utf-8").strip() or "0.0.0"
+    except Exception:
+        pass
+    return "0.0.0"
 
 
 def check_for_update():
     try:
+        current_version = get_local_version()
         req = urllib.request.Request(UPDATE_URL, headers={"User-Agent": "AI-Network-Copilot"})
         resp = urllib.request.urlopen(req, timeout=5)
         data = json.loads(resp.read().decode())
         latest = data.get("tag_name", "").lstrip("v")
-        if latest and latest != VERSION:
+        if latest and latest != current_version:
             return latest, data.get("html_url", "")
     except Exception:
         pass
@@ -135,9 +189,10 @@ def check_for_update():
 
 
 def run_update_sequence():
+    current_version = get_local_version()
     latest, url = check_for_update()
     if latest:
-        print(f"\n  [UPDATE] v{VERSION} -> v{latest}")
+        print(f"\n  [UPDATE] v{current_version} -> v{latest}")
         print(f"     {url}")
         print("  Download the latest release and extract it over this folder.")
     else:
@@ -146,17 +201,18 @@ def run_update_sequence():
 
 
 def main():
+    ensure_api_key()
     python = get_venv_python()
     services = [
         Service("Collector",
                 [python, "-u", str(PROJECT_DIR / "collector" / "simulator_v2.py")],
                 PROJECT_DIR, 92),
         Service("API",
-                [python, "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"],
+                [python, "-m", "uvicorn", "main:app", "--host", BIND_HOST, "--port", "8000"],
                 PROJECT_DIR / "api", 94),
         Service("Dashboard",
                 [python, "-m", "streamlit", "run", str(PROJECT_DIR / "dashboard" / "app.py"),
-                 "--server.port", "8501"],
+                 "--server.port", "8501", "--server.address", BIND_HOST, "--server.headless", "true"],
                 PROJECT_DIR, 96),
     ]
 

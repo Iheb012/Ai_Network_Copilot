@@ -1,4 +1,5 @@
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request, Depends
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Optional, Set
 import datetime
@@ -7,9 +8,9 @@ import sys
 import os
 import asyncio
 import json
-import random
 import re
-import subprocess
+import ping3
+from starlette.concurrency import run_in_threadpool
 
 # Add the api directory and project root to the path so we can import database and detection
 api_dir = os.path.dirname(os.path.abspath(__file__))
@@ -21,10 +22,13 @@ sys.path.append(project_root)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+from security import require_api_key
+
 app = FastAPI(
     title="AI Network Copilot API",
     description="API for network metrics and alerts",
-    version="0.1.0"
+    version="0.1.0",
+    dependencies=[Depends(require_api_key)],
 )
 
 # Connection manager for WebSocket connections
@@ -92,6 +96,11 @@ def _is_hotspot_network(devices):
 
 # Import detection bridge (Personne A's ML engine — replaces raw DB queries)
 from detection_bridge import get_alerts_with_causes, get_metrics_with_detection, analyser_metrique_temps_reel
+
+def _is_safe_ping_target(host: str) -> bool:
+    if not host or len(host) > 253:
+        return False
+    return re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9\.\-:]*", host) is not None
 
 @app.on_event("startup")
 async def startup_event():
@@ -161,6 +170,38 @@ async def websocket_alerts_endpoint(websocket: WebSocket):
         manager.disconnect(websocket, "alerts")
 
 
+def _ip_sort_key(ip):
+    try:
+        return tuple(int(x) for x in ip.split("."))
+    except ValueError:
+        return (999, 0, 0, 0)
+
+
+def _pick_hub(devices):
+    """The device everything hangs off: the real default gateway if the collector
+    tagged one, else any Router, else the lowest IP. Deterministic, so the
+    topology does not reshuffle between refreshes."""
+    ordered = sorted((d for d in devices if d.get("ip")), key=lambda d: _ip_sort_key(d["ip"]))
+    for d in ordered:
+        if d.get("vendor") == "Gateway":
+            return d
+    for d in ordered:
+        if "Router" in (d.get("device_type") or ""):
+            return d
+    return ordered[0] if ordered else None
+
+
+def _topology_links(devices):
+    """Hub-and-spoke links (gateway to every other device). The old code linked
+    every pair in the subnet, which is N*(N-1)/2 links and not a real topology."""
+    hub = _pick_hub(devices)
+    if not hub:
+        return []
+    return [{"source": hub["ip"], "target": d["ip"], "label": "", "type": "ethernet"}
+            for d in sorted((x for x in devices if x.get("ip") and x["ip"] != hub["ip"]),
+                            key=lambda x: _ip_sort_key(x["ip"]))]
+
+
 @app.websocket("/ws/topology")
 async def websocket_topology_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time topology updates"""
@@ -216,24 +257,7 @@ async def websocket_topology_endpoint(websocket: WebSocket):
                     }
                     nodes.append(node)
 
-                # For now, create simple links based on subnet proximity
-                # In a real implementation, we'd use traceroute data or LLDP/CDP
-                for i, device1 in enumerate(devices):
-                    for j, device2 in enumerate(devices[i+1:], i+1):
-                        # Simple heuristic: devices in same subnet are likely connected
-                        # This is a placeholder - real topology would use actual discovery protocols
-                        ip1_parts = device1["ip"].split(".")
-                        ip2_parts = device2["ip"].split(".")
-                        if len(ip1_parts) == 4 and len(ip2_parts) == 4:
-                            # If first three octets match, they're likely on same subnet
-                            if ip1_parts[0] == ip2_parts[0] and ip1_parts[1] == ip2_parts[1] and ip1_parts[2] == ip2_parts[2]:
-                                link = {
-                                    "source": device1["ip"],
-                                    "target": device2["ip"],
-                                    "label": "",  # Would be interface info in real implementation
-                                    "type": "ethernet"
-                                }
-                                links.append(link)
+                links = _topology_links(devices)
 
                 await websocket.send_json({
                     "type": "topology_update",
@@ -324,84 +348,62 @@ async def get_hosts_endpoint():
 
 
 
+PING_PROBES = 4          # packets sent per request
+PING_TIMEOUT_S = 1       # seconds to wait for each reply
+
+
+def _measure_host(target: str):
+    """Send real ICMP probes. Returns (avg_latency_ms | None, loss_percent)."""
+    latencies = []
+    for _ in range(PING_PROBES):
+        try:
+            rtt = ping3.ping(target, timeout=PING_TIMEOUT_S)
+        except Exception:
+            rtt = None
+        # ping3 returns seconds on success, None on timeout, False on error
+        if rtt is not None and rtt is not False:
+            latencies.append(float(rtt) * 1000)
+    loss = (PING_PROBES - len(latencies)) / PING_PROBES * 100
+    avg = round(sum(latencies) / len(latencies), 2) if latencies else None
+    return avg, round(loss, 1)
+
+
 @app.get("/ping/{host}", response_model=PingResult)
 async def ping_host_endpoint(host: str):
-    """Ping a specific host and return real-time metrics with smart fallback."""
+    """Ping a host with real ICMP probes and return the measured result.
+
+    Nothing is simulated: an unreachable host is reported as unreachable
+    (latency null, error_rate 100). Traffic is not measured by ping, so it is 0.
+    """
     logger.info(f"Pinging host: {host}")
+    if not _is_safe_ping_target(host):
+        raise HTTPException(status_code=400, detail="Invalid host format")
+
+    latency, error_rate = await run_in_threadpool(_measure_host, host)
+    traffic = 0.0
+
     try:
-        def do_ping(target):
-            """Try to ping the host using subprocess. Returns (latency, success)."""
-            try:
-                output = subprocess.run(
-                    ['ping', '-n', '1', '-w', '1000', target],
-                    capture_output=True,
-                    text=True,
-                    timeout=2
-                )
-                if output.returncode == 0:
-                    match = re.search(r'time[<=](\d+\.?\d*)\s*ms', output.text, re.IGNORECASE)
-                    if match:
-                        return float(match.group(1)), True
-                return None, False
-            except (subprocess.TimeoutExpired, Exception):
-                return None, False
-
-        # Try real ping first
-        latency, success = do_ping(host)
-
-        traffic = 0.0
-        if not success:
-            # Fall back to simulated data
-            host_hash = sum(ord(c) for c in host) % 100
-            base_latency = 15 + (host_hash % 40)
-            jitter = random.randint(-5, 15)
-            latency = float(max(5, base_latency + jitter))
-
-            if host_hash % 7 == 0:
-                latency = None
-                error_rate = 100.0
-                logger.info(f"Real ping failed for {host}, using simulated_unreachable")
-            else:
-                error_rate = round(random.uniform(0.1, 1.5), 2)
-                logger.info(f"Real ping failed for {host}, using simulated data: {latency}ms")
-        else:
-            error_rate = 0.0
-
-        # Use ML engine to analyze the measurement in real time
-        try:
-            detection = analyser_metrique_temps_reel(
-                latency or 0, error_rate, traffic
-            )
-            is_anomaly = detection["is_anomaly"]
-            logger.info(
-                f"Detection for {host}: "
-                f"{'ANOMALY' if is_anomaly else 'OK'} | "
-                f"Cause: {detection['description']} | "
-                f"Confiance: {detection['score_confiance']}%"
-            )
-        except Exception:
-            # Fallback if ML engine fails
-            is_anomaly = (latency or 0) > 150 or error_rate > 5
-
-        result = PingResult(
-            host=host,
-            latency=latency,
-            error_rate=error_rate,
-            traffic=traffic,
-            is_anomaly=bool(is_anomaly),
-            ts=datetime.datetime.now()
+        detection = analyser_metrique_temps_reel(latency or 0, error_rate, traffic)
+        is_anomaly = detection["is_anomaly"]
+        logger.info(
+            f"Detection for {host}: "
+            f"{'ANOMALY' if is_anomaly else 'OK'} | "
+            f"Cause: {detection['description']} | "
+            f"Confiance: {detection['score_confiance']}%"
         )
-        return result
     except Exception as e:
-        logger.error(f"Error pinging host {host}: {e}")
-        return PingResult(
-            host=host,
-            latency=random.uniform(20, 80),
-            error_rate=1.0,
-            traffic=0.0,
-            is_anomaly=False,
-            ts=datetime.datetime.now()
-        )
+        logger.warning(f"ML engine unavailable ({e}); using threshold fallback")
+        is_anomaly = (latency or 0) > 150 or error_rate > 5
+
+    return PingResult(
+        host=host,
+        latency=latency,
+        error_rate=error_rate,
+        traffic=traffic,
+        is_anomaly=bool(is_anomaly),
+        ts=datetime.datetime.now(),
+    )
+
 
 @app.get("/hosts/detail")
 async def get_hosts_detail_endpoint():
@@ -473,18 +475,7 @@ async def get_topology_endpoint():
             }
             nodes.append(node)
 
-        for i, device1 in enumerate(devices):
-            for device2 in devices[i+1:]:
-                ip1_parts = device1["ip"].split(".")
-                ip2_parts = device2["ip"].split(".")
-                if len(ip1_parts) == 4 and len(ip2_parts) == 4:
-                    if ip1_parts[:3] == ip2_parts[:3]:
-                        links.append({
-                            "source": device1["ip"],
-                            "target": device2["ip"],
-                            "label": "",
-                            "type": "ethernet"
-                        })
+        links = _topology_links(devices)
 
         return {"nodes": nodes, "links": links}
     except Exception as e:
@@ -492,6 +483,6 @@ async def get_topology_endpoint():
         raise HTTPException(status_code=500, detail="Failed to fetch topology data")
 
 @app.exception_handler(Exception)
-async def generic_exception_handler(request, exc):
+async def generic_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled exception: {exc}")
-    return HTTPException(status_code=500, detail="Internal server error")
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
