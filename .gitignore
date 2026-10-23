@@ -73,3 +73,6 @@ dashboard/static/*.mp4
 *.backup
 *.backup*
 *~
+
+# API key (generated at first run)
+data/.api_key

@@ -270,3 +270,16 @@ CREATE TABLE network_metrics (
 - Scapy ARP scanning may need the Npcap/WinPcap driver on Windows
 - The pre-trained ML model (`detection/model.pkl`) can be retrained by running `detection/ml_model.py`
 - Custom device type overrides can be set in `dashboard/app.py` (`_DEVICE_TYPE_OVERRIDES` dict)
+
+---
+
+## Security
+
+- **API key authentication.** Every API endpoint (REST and WebSocket) requires an API key, except `/health` and `/docs`. The launcher creates a random key in `data/.api_key` on first run (git-ignored) and shares it with the API, dashboard and collector automatically. To use your own key, set the `AI_COPILOT_API_KEY` environment variable. REST clients send it as an `X-API-Key` header; WebSockets use `?api_key=<key>`.
+- **Docker:** set the same `AI_COPILOT_API_KEY` for the API and dashboard containers, and build the API image from the repo root: `docker build -f api/Dockerfile .`
+- **Local only by default.** The launcher binds the API and dashboard to `127.0.0.1`. Set `AI_COPILOT_HOST=0.0.0.0` to allow other devices (trusted networks only: the dashboard page embeds the key).
+- **Network interface.** The ARP scan interface is auto-detected. Override it with the `SCAPY_IFACE` environment variable if needed.
+- **`/ping/{host}`** sends real ICMP probes (4 packets). An unreachable host is reported as unreachable (`latency: null`, `error_rate: 100`); no data is simulated.
+- **ML model.** `detection/model.pkl` was trained with scikit-learn 1.9.0, which is pinned in `api/requirements.txt`. If you change the version, retrain with `detection/ml_model.py`.
+- **Device discovery.** Devices come only from real network discovery (ARP scan, or ping sweep + neighbour table when not running as root). `hosts.txt` is used only when you pass `--use-file`. On a VirtualBox VM use **Bridged Adapter** networking, otherwise the VM only sees its own virtual NAT network.
+- **Performance.** On virtual machines or computers without GPU acceleration, start with `python launcher.py --lite` (or set `AI_COPILOT_LITE=1`) to disable the 3D background and blur effects.

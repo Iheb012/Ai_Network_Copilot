@@ -1,3 +1,4 @@
+import json
 import streamlit as st
 import streamlit.components.v1 as components
 import requests
@@ -26,6 +27,26 @@ st.set_page_config(
 )
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000").rstrip("/")
+
+def _load_api_key():
+    """Same key the API uses: env var first, then data/.api_key."""
+    key = os.getenv("AI_COPILOT_API_KEY", "").strip()
+    if key:
+        return key
+    try:
+        key_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", ".api_key")
+        with open(key_file, "r", encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+API_KEY = _load_api_key()
+API_HEADERS = {"X-API-Key": API_KEY}
+
+# Lite mode: no 3D (WebGL) background and no blur effects. Much faster on virtual
+# machines or computers without GPU acceleration.  Enable with AI_COPILOT_LITE=1
+# or `python launcher.py --lite`.
+LITE_MODE = os.getenv("AI_COPILOT_LITE", "").lower() in ("1", "true", "yes")
 API_WS_BASE_URL = os.getenv("API_WS_BASE_URL", API_BASE_URL.replace("http://", "ws://").replace("https://", "wss://")).rstrip("/")
 
 # ─────────────────────────────────────────────
@@ -83,7 +104,7 @@ def fetch_metrics(limit=100, force_http=False):
 
     # Fallback to HTTP polling
     try:
-        resp = requests.get(f"{API_BASE_URL}/metrics/latest?limit={limit}", timeout=5)
+        resp = requests.get(f"{API_BASE_URL}/metrics/latest?limit={limit}", headers=API_HEADERS, timeout=5)
         resp.raise_for_status()
         return _unwrap(resp.json())
     except Exception as e:
@@ -99,7 +120,7 @@ def fetch_alerts(limit=50):
 
     # Fallback to HTTP polling
     try:
-        resp = requests.get(f"{API_BASE_URL}/alerts?limit={limit}", timeout=5)
+        resp = requests.get(f"{API_BASE_URL}/alerts?limit={limit}", headers=API_HEADERS, timeout=5)
         resp.raise_for_status()
         return _unwrap(resp.json())
     except Exception as e:
@@ -111,7 +132,7 @@ def fetch_hosts():
 
 def _fetch_hosts_impl():
     try:
-        resp = requests.get(f"{API_BASE_URL}/hosts", timeout=5)
+        resp = requests.get(f"{API_BASE_URL}/hosts", headers=API_HEADERS, timeout=5)
         resp.raise_for_status()
         data = resp.json()
         return _unwrap(data) if isinstance(data, dict) else data
@@ -124,7 +145,7 @@ def fetch_hosts_detail():
 
 def _fetch_hosts_detail_impl():
     try:
-        resp = requests.get(f"{API_BASE_URL}/hosts/detail", timeout=5)
+        resp = requests.get(f"{API_BASE_URL}/hosts/detail", headers=API_HEADERS, timeout=5)
         resp.raise_for_status()
         data = resp.json()
         return _unwrap(data) if isinstance(data, dict) else data
@@ -137,7 +158,7 @@ def fetch_devices():
 
 def _fetch_devices_impl():
     try:
-        resp = requests.get(f"{API_BASE_URL}/devices", timeout=5)
+        resp = requests.get(f"{API_BASE_URL}/devices", headers=API_HEADERS, timeout=5)
         resp.raise_for_status()
         data = resp.json()
         return _unwrap(data) if isinstance(data, dict) else data
@@ -152,7 +173,7 @@ def fetch_topology():
         return st.session_state.latest_topology
     # Fallback to HTTP polling — return None on any error
     try:
-        resp = requests.get(f"{API_BASE_URL}/topology", timeout=5)
+        resp = requests.get(f"{API_BASE_URL}/topology", headers=API_HEADERS, timeout=5)
         resp.raise_for_status()
         data = resp.json()
         # Unwrap if needed
@@ -165,7 +186,7 @@ def fetch_topology():
 def ping_host(host):
     """Ping a single host via the API."""
     try:
-        resp = requests.get(f"{API_BASE_URL}/ping/{host}", timeout=10)
+        resp = requests.get(f"{API_BASE_URL}/ping/{host}", headers=API_HEADERS, timeout=10)
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
@@ -279,13 +300,14 @@ websocket_js = """
 // WebSocket connections
 let wsConnections = {};
 const apiWsBase = "__API_WS_BASE_URL__";
+const apiKey = encodeURIComponent("__API_KEY__");
 
 // Initialize WebSocket connections
 function initWebSockets() {
     // Connect to metrics WebSocket
-    wsConnections.metrics = new WebSocket(`${apiWsBase}/ws/metrics`);
-    wsConnections.messages = new WebSocket(`${apiWsBase}/ws/alerts`);
-    wsConnections.topology = new WebSocket(`${apiWsBase}/ws/topology`);
+    wsConnections.metrics = new WebSocket(`${apiWsBase}/ws/metrics?api_key=${apiKey}`);
+    wsConnections.messages = new WebSocket(`${apiWsBase}/ws/alerts?api_key=${apiKey}`);
+    wsConnections.topology = new WebSocket(`${apiWsBase}/ws/topology?api_key=${apiKey}`);
 
     // Handle messages from all WebSocket connections
     Object.keys(wsConnections).forEach(type => {
@@ -388,7 +410,7 @@ if (document.readyState === 'loading') {
 }
 </script>
 """
-websocket_js = websocket_js.replace("__API_WS_BASE_URL__", API_WS_BASE_URL)
+websocket_js = websocket_js.replace("__API_WS_BASE_URL__", API_WS_BASE_URL).replace("__API_KEY__", API_KEY)
 
 # Add the WebSocket JavaScript to the Streamlit app
 st.components.v1.html(websocket_js, height=0)
@@ -1158,6 +1180,7 @@ if not st.session_state.get("bg_video_injected", False):
 
       body.style.background = '#08070f';
 
+      if ({str(LITE_MODE).lower()}) return;   // lite mode: skip the 3D scene
       if (doc.getElementById('spline-bg')) return;
 
       // Load the Spline viewer runtime once (type=module, unpkg CDN).
@@ -1186,6 +1209,15 @@ if not st.session_state.get("bg_video_injected", False):
     </script>
     """, height=0)
     st.session_state.bg_video_injected = True
+
+if LITE_MODE:
+    # backdrop-filter (blur) is expensive to composite without a GPU
+    st.markdown("""
+    <style>
+    * { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+    .stApp { background: radial-gradient(ellipse at 50% 0%, #1a0b33 0%, #08070f 70%) !important; }
+    </style>
+    """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
 #  SHOOTING STAR — plays whenever a tab is switched
@@ -1365,26 +1397,39 @@ def build_network_topology(metrics, devices=None):
             "sample_count": host_count[host]
         }
 
-    nodes = list(seen.values())
+    def _node_key(n):
+        if n["is_ip"]:
+            return (0, tuple(int(x) for x in n["ip"].split(".")), "")
+        return (1, (0, 0, 0, 0), n["id"])
 
+    # Stable order: the metrics arrive in a different order on every refresh, and
+    # that used to shuffle node positions around the circle.
+    nodes = sorted(seen.values(), key=_node_key)
+
+    # Hub = the real default gateway. The collector tags it vendor "Gateway" /
+    # type "Router". Fallbacks are deterministic (never "most samples", which
+    # changes every cycle and made the topology jump around).
     hub = None
     for n in nodes:
-        if n["is_ip"] and is_private_ip(n["ip"]) and n["ip"].endswith(".1"):
+        if device_lookup.get(n["id"], {}).get("vendor") == "Gateway":
             hub = n["id"]
-            n["device_type"] = "Router"
             break
     if not hub:
+        for n in nodes:
+            if "Router" in (n["device_type"] or ""):
+                hub = n["id"]
+                break
+    if not hub:
+        for n in nodes:
+            if n["is_ip"] and is_private_ip(n["ip"]) and n["ip"].endswith((".1", ".254")):
+                hub = n["id"]
+                break
+    if not hub:
         private = [n for n in nodes if n["is_ip"] and is_private_ip(n["ip"])]
-        if private:
-            hub = max(private, key=lambda n: n["sample_count"])["id"]
-    if not hub:
-        ips = [n for n in nodes if n["is_ip"]]
-        if ips:
-            hub = max(ips, key=lambda n: n["sample_count"])["id"]
-    if not hub:
-        hub = max(nodes, key=lambda n: n["sample_count"])["id"]
-    if not hub and nodes:
-        hub = sorted(nodes, key=lambda n: n["id"])[0]["id"]
+        hub = (private or nodes)[0]["id"] if (private or nodes) else None
+    for n in nodes:
+        if n["id"] == hub and n["is_ip"]:
+            n["device_type"] = "Router"
 
     links = []
     subnet_groups = {}
@@ -1408,7 +1453,7 @@ def build_network_topology(metrics, devices=None):
         if n["id"] != hub and n["id"] not in linked:
             links.append({"source": hub, "target": n["id"], "type": "ethernet", "latency": n["latency"]})
 
-    return {"nodes": nodes, "links": links}
+    return {"nodes": nodes, "links": links, "hub": hub}
 
 # ─────────────────────────────────────────────
 #  STATUS (minimal, no header/entry text)
@@ -2039,7 +2084,7 @@ elif active_tab == _TABS[3]:
 
         # Calculate positions (hub at center, others in circle)
         pos = {}
-        hub_id = links_list[0]["source"] if links_list else nodes_list[0]["id"]
+        hub_id = final_topo.get("hub") or (links_list[0]["source"] if links_list else nodes_list[0]["id"])
         pos[hub_id] = (0.0, 0.0)
         others = [n for n in nodes_list if n["id"] != hub_id]
         for i, n in enumerate(others):
@@ -2222,6 +2267,16 @@ elif active_tab == _TABS[3]:
             pt = event["selection"]["points"][0]
             if pt.get("customdata"):
                 clicked_target = pt["customdata"]
+
+        # A plotly selection STAYS in the event on every later rerun (auto-refresh,
+        # closing the result card...). Without this check the same node was pinged
+        # again on every rerun, which made the tab flicker and feel slow.
+        if clicked_target is None:
+            st.session_state["_last_clicked_target"] = None
+        elif clicked_target == st.session_state.get("_last_clicked_target"):
+            clicked_target = None
+        else:
+            st.session_state["_last_clicked_target"] = clicked_target
 
         if clicked_target:
             st.session_state.ping_target = clicked_target

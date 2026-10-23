@@ -63,9 +63,36 @@ except ImportError:
     SCAPY_AVAILABLE = False
     print("Warning: scapy not installed. Network discovery disabled. Install with: pip install scapy")
 
-# ── Pinned network interface (auto-detected: 192.168.1.19) ──────────────────
-# Change this if your interface GUID changes (run get_if_list() to find it)
-SCAPY_IFACE = r"\Device\NPF_{20AC1ACB-17E7-48D4-82EA-04348BB56226}"
+# ── Network interface used for ARP scans ─────────────────────────────────────
+# Auto-detected from the system routing table (the interface that reaches the
+# internet), so it works on any machine. To force a specific adapter, set the
+# SCAPY_IFACE environment variable (run scapy's get_if_list() to see the names).
+_SCAPY_IFACE_CACHE = None
+
+
+def get_scapy_iface():
+    """Return the interface scapy should use for ARP scans."""
+    global _SCAPY_IFACE_CACHE
+    if _SCAPY_IFACE_CACHE is not None:
+        return _SCAPY_IFACE_CACHE
+    override = os.getenv("SCAPY_IFACE", "").strip()
+    if override:
+        _SCAPY_IFACE_CACHE = override
+        return override
+    iface = None
+    try:
+        iface = conf.route.route("8.8.8.8")[0]      # interface for the default route
+    except Exception:
+        pass
+    if not iface or str(iface) in ("lo", "lo0"):
+        try:
+            iface = conf.iface                       # scapy's own default
+        except Exception:
+            pass
+    _SCAPY_IFACE_CACHE = iface
+    print(f"[*] Using network interface: {iface}")
+    return iface
+
 
 # Try to import pysnmp for SNMP support
 try:
@@ -329,7 +356,7 @@ def snmp_get_interfaces(host, community='public'):
                 'index': i,
                 'description': if_descr,
                 'type': if_type,
-                'mtu': intif_mtu if if_mtu and if_mtu.isdigit() else None,
+                'mtu': int(if_mtu) if if_mtu and if_mtu.isdigit() else None,
                 'speed': int(if_speed) if if_speed and if_speed.isdigit() else None,
                 'mac_address': mac_address,
                 'admin_status': if_admin_status,
@@ -715,6 +742,9 @@ def parse_arp_table():
     Tries PowerShell Get-NetNeighbor first (more complete), falls back to arp -a.
     Only returns entries that represent REAL devices (valid MAC + confirmed state).
     Returns list of device dicts (ip, mac, vendor, hostname)."""
+    if sys.platform != "win32":
+        return _parse_arp_table_linux()
+
     devices = []
     seen_ips = set()
 
@@ -1116,21 +1146,135 @@ def discover_local_devices_win(sweep=True):
     return devices
 
 
+def _parse_neighbour_table():
+    """Read the kernel ARP/neighbour table on Linux (no root needed).
+    Returns {ip: mac} for entries with a resolved MAC address."""
+    table = {}
+    try:
+        out = subprocess.run(['ip', '-4', 'neigh', 'show'],
+                             capture_output=True, text=True, timeout=5).stdout
+        for line in out.splitlines():
+            parts = line.split()
+            if 'lladdr' in parts and parts[-1] not in ('FAILED', 'INCOMPLETE'):
+                table[parts[0]] = parts[parts.index('lladdr') + 1].lower()
+    except Exception:
+        pass
+    if not table:
+        try:
+            with open('/proc/net/arp') as fh:
+                next(fh, None)
+                for line in fh:
+                    f = line.split()
+                    if len(f) >= 4 and f[3] != '00:00:00:00:00:00':
+                        table[f[0]] = f[3].lower()
+        except Exception:
+            pass
+    return table
+
+
+def ping_sweep_linux(subnet, timeout_s=1, max_workers=64):
+    """Parallel ping sweep using Linux ping flags. Returns IPs that answered."""
+    import ipaddress
+    from concurrent.futures import ThreadPoolExecutor
+    net = ipaddress.ip_network(subnet, strict=False)
+
+    def _ping(ip):
+        try:
+            r = subprocess.run(['ping', '-c', '1', '-W', str(timeout_s), ip],
+                               capture_output=True, timeout=timeout_s + 1)
+            return ip if r.returncode == 0 else None
+        except Exception:
+            return None
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        return [ip for ip in ex.map(_ping, [str(h) for h in net.hosts()]) if ip]
+
+
+def discover_local_devices_linux():
+    """Linux/macOS discovery that needs NO root: a ping sweep wakes devices up,
+    then the kernel neighbour table gives their MAC addresses.
+    Only ever returns devices that really answered on the local network."""
+    import ipaddress
+    from concurrent.futures import ThreadPoolExecutor
+    self_ip = get_interface_for_destination("8.8.8.8")
+    try:
+        net = ipaddress.ip_network(get_local_subnet(), strict=False)
+        if net.prefixlen < 24 and self_ip:        # never sweep a huge /16
+            net = ipaddress.ip_network(f"{self_ip}/24", strict=False)
+    except ValueError:
+        return []
+    print(f"[*] Discovering devices on {net} (ping sweep + neighbour table, no root needed)...")
+    ips = set(ping_sweep_linux(str(net)))
+    neigh = _parse_neighbour_table()
+    for ip in neigh:
+        try:
+            if ipaddress.ip_address(ip) in net:
+                ips.add(ip)
+        except ValueError:
+            pass
+    ips = {ip for ip in ips if ip != self_ip and not is_bad_network_ip(ip)}
+
+    def _enrich(ip):
+        mac = neigh.get(ip)
+        vendor = mac_vendor_lookup(mac) if mac else "Unknown"
+        hostname = get_hostname(ip)
+        ports = scan_ports(ip, timeout=0.5)
+        dtype = classify_device({"ip": ip, "mac": mac, "vendor": vendor,
+                                 "hostname": hostname, "ports": ports})
+        return {"ip": ip, "mac": mac, "vendor": vendor, "hostname": hostname,
+                "device_type": dtype, "ports": ports, "trace_route": []}
+
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        devices = list(ex.map(_enrich, sorted(ips, key=ipaddress.ip_address)))
+    print(f"[*] Discovery complete: {len(devices)} devices")
+    return devices
+
+
+def _parse_arp_table_linux():
+    """Linux/macOS version of parse_arp_table(): read the kernel neighbour table."""
+    devices = []
+    for ip, mac in _parse_neighbour_table().items():
+        if is_bad_network_ip(ip):
+            continue
+        devices.append({
+            "ip": ip, "mac": mac, "vendor": mac_vendor_lookup(mac),
+            "hostname": None, "device_type": "Unknown",
+            "ports": [], "trace_route": []
+        })
+    return devices
+
+
+def _wake_neighbours_linux():
+    """Linux equivalent of broadcast_ping(): ping the local /24 so that devices
+    that joined since the last scan show up in the neighbour table."""
+    import ipaddress
+    try:
+        self_ip = get_interface_for_destination("8.8.8.8")
+        net = ipaddress.ip_network(get_local_subnet(), strict=False)
+        if net.prefixlen < 24 and self_ip:
+            net = ipaddress.ip_network(f"{self_ip}/24", strict=False)
+        ping_sweep_linux(str(net))
+    except Exception:
+        pass
+
+
+def _fallback_discovery():
+    """Used when the raw ARP scan is unavailable (not root, no scapy, empty result).
+    NEVER falls back to hosts.txt: public hosts such as 8.8.8.8 or google.com
+    are not devices on your network and would pollute the dashboard."""
+    if sys.platform == "win32":
+        return discover_local_devices_win()
+    return discover_local_devices_linux()
+
+
 def discover_network_devices(subnet=None):
     """
     Discover network devices with enhanced information.
     Returns a list of dictionaries with device information.
     """
     if not SCAPY_AVAILABLE:
-        print("Scapy not available; trying Windows ARP cache...")
-        arp_devices = discover_local_devices_win()
-        if arp_devices:
-            return arp_devices
-        print("[!] ARP empty; falling back to hosts.txt")
-        hosts = load_hosts_from_file()
-        return [{"ip": ip, "mac": None, "vendor": "Unknown", "hostname": None,
-                "device_type": "Unknown", "ports": [], "trace_route": []}
-                for ip in hosts]
+        print("[!] scapy not available; using ping sweep + neighbour table")
+        return _fallback_discovery()
 
     # Auto-detect subnet if not provided
     if subnet is None:
@@ -1140,24 +1284,17 @@ def discover_network_devices(subnet=None):
     print(f"[*] Discovering devices on subnet {subnet}...")
 
     # Perform ARP scan — pin interface to avoid loopback adapter error
-    conf.iface = SCAPY_IFACE
+    conf.iface = get_scapy_iface()
     arp = ARP(pdst=subnet)
     ether = Ether(dst="ff:ff:ff:ff:ff:ff")
     packet = ether/arp
 
     try:
-        result = srp(packet, iface=SCAPY_IFACE, timeout=5, inter=0.1, verbose=0)[0]
+        result = srp(packet, iface=get_scapy_iface(), timeout=5, inter=0.1, verbose=0)[0]
     except Exception as e:
-        print(f"[!] ARP scan failed: {e}")
-        print("[!] Trying Windows ARP cache as fallback...")
-        arp_devices = discover_local_devices_win()
-        if arp_devices:
-            return arp_devices
-        print("[!] Falling back to hosts.txt")
-        hosts = load_hosts_from_file()
-        return [{"ip": ip, "mac": None, "vendor": "Unknown", "hostname": None,
-                 "device_type": "Unknown", "ports": [], "trace_route": []}
-                for ip in hosts]
+        print(f"[!] ARP scan failed ({e}). Raw ARP needs root; "
+              f"using ping sweep + neighbour table instead.")
+        return _fallback_discovery()
 
     devices = []
     for sent, received in result:
@@ -1216,15 +1353,8 @@ def discover_network_devices(subnet=None):
             print(f"    SNMP Info: {descr[:50]}...")
 
     if not devices:
-        print("[!] No devices discovered via ARP; trying Windows ARP cache...")
-        arp_devices = discover_local_devices_win()
-        if arp_devices:
-            return arp_devices
-        print("[!] Falling back to hosts.txt")
-        hosts = load_hosts_from_file()
-        return [{"ip": ip, "mac": None, "vendor": "Unknown", "hostname": None,
-                "device_type": "Unknown", "ports": [], "trace_route": []}
-                for ip in hosts]
+        print("[!] No devices found via ARP; trying ping sweep + neighbour table")
+        return _fallback_discovery()
 
     return devices
 
@@ -1342,14 +1472,14 @@ def discover_hosts(subnet="192.168.1.0/24", timeout=2):
     conf.verb = 0
 
     # Create ARP request packet — pin interface to avoid loopback adapter error
-    conf.iface = SCAPY_IFACE
+    conf.iface = get_scapy_iface()
     arp = ARP(pdst=subnet)
     ether = Ether(dst="ff:ff:ff:ff:ff:ff")
     packet = ether/arp
 
     # Send packet and capture responses
     try:
-        result = srp(packet, iface=SCAPY_IFACE, timeout=max(timeout,5), inter=0.1, verbose=0)[0]
+        result = srp(packet, iface=get_scapy_iface(), timeout=max(timeout,5), inter=0.1, verbose=0)[0]
     except Exception as e:
         print(f"[!] ARP scan failed: {e}")
         return [(ip, None) for ip in load_hosts_from_file()]
@@ -1478,7 +1608,8 @@ def main():
                         self_ip = socket.gethostbyname(socket.gethostname())
                     except Exception:
                         self_ip = None
-                gateway_ip = get_default_gateway_windows()
+                gateway_ip = (get_default_gateway_windows() if sys.platform == "win32"
+                              else get_default_gateway_linux())
                 existing_ips = {d["ip"] for d in devices}
                 if self_ip and self_ip not in existing_ips:
                     devices.append({
@@ -1563,7 +1694,10 @@ def main():
             if time.time() - getattr(main, "_last_mini_discovery", 0) >= 60:
                 main._last_mini_discovery = time.time()
                 try:
-                    broadcast_ping()
+                    if sys.platform == "win32":
+                        broadcast_ping()
+                    else:
+                        _wake_neighbours_linux()
                     time.sleep(0.3)
                     new_arp = parse_arp_table()
                     for d in new_arp:
