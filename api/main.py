@@ -100,6 +100,11 @@ def _build_ping_command(target: str, timeout_ms: int = 1000):
     timeout_s = max(1, int(timeout_ms / 1000))
     return ['ping', '-c', '1', '-W', str(timeout_s), target], max(2, timeout_s + 1)
 
+def _is_safe_ping_target(host: str) -> bool:
+    if not host or len(host) > 253:
+        return False
+    return re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9\.\-:]*", host) is not None
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize database on startup"""
@@ -336,6 +341,9 @@ async def ping_host_endpoint(host: str):
     """Ping a specific host and return real-time metrics with smart fallback."""
     logger.info(f"Pinging host: {host}")
     try:
+        if not _is_safe_ping_target(host):
+            raise HTTPException(status_code=400, detail="Invalid host format")
+
         def do_ping(target):
             """Try to ping the host using subprocess. Returns (latency, success)."""
             try:
