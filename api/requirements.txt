@@ -4,3 +4,4 @@ pydantic
 pandas
 joblib
 scikit-learn
+ping3

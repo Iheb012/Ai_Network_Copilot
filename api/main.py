@@ -10,7 +10,7 @@ import asyncio
 import json
 import random
 import re
-import subprocess
+import ping3
 
 # Add the api directory and project root to the path so we can import database and detection
 api_dir = os.path.dirname(os.path.abspath(__file__))
@@ -93,12 +93,6 @@ def _is_hotspot_network(devices):
 
 # Import detection bridge (Personne A's ML engine — replaces raw DB queries)
 from detection_bridge import get_alerts_with_causes, get_metrics_with_detection, analyser_metrique_temps_reel
-
-def _build_ping_command(target: str, timeout_ms: int = 1000):
-    if sys.platform == "win32":
-        return ['ping', '-n', '1', '-w', str(timeout_ms), target], max(2, timeout_ms / 1000 + 1)
-    timeout_s = max(1, int(timeout_ms / 1000))
-    return ['ping', '-c', '1', '-W', str(timeout_s), target], max(2, timeout_s + 1)
 
 def _is_safe_ping_target(host: str) -> bool:
     if not host or len(host) > 253:
@@ -345,21 +339,13 @@ async def ping_host_endpoint(host: str):
             raise HTTPException(status_code=400, detail="Invalid host format")
 
         def do_ping(target):
-            """Try to ping the host using subprocess. Returns (latency, success)."""
+            """Try to ping the host. Returns (latency, success)."""
             try:
-                cmd, cmd_timeout = _build_ping_command(target, timeout_ms=1000)
-                output = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=cmd_timeout
-                )
-                if output.returncode == 0:
-                    match = re.search(r'time[<=](\d+\.?\d*)\s*ms', output.text, re.IGNORECASE)
-                    if match:
-                        return float(match.group(1)), True
+                latency_seconds = ping3.ping(target, timeout=1)
+                if latency_seconds is not None:
+                    return round(float(latency_seconds) * 1000, 2), True
                 return None, False
-            except (subprocess.TimeoutExpired, Exception):
+            except Exception:
                 return None, False
 
         # Try real ping first

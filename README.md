@@ -175,6 +175,7 @@ docker run -p 8501:8501 \
 - pandas
 - joblib
 - scikit-learn
+- ping3
 
 ### Dashboard (`dashboard/requirements.txt`)
 - streamlit
